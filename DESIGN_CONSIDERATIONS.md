@@ -1,307 +1,385 @@
 # Design Considerations
 
-Running log of decisions made while building this prototype, why, and
-what they trade off. Updated as the build progresses, not written
-after the fact.
+Running log of engineering decisions made while building AcquireIQ, why those decisions were made, and what they trade off. This document is intended to evolve with the implementation rather than be reconstructed after the fact.
 
 ## Build approach: baseline first, incrementally
 
-Before writing any label-verification logic, the priority was getting
-a sound, verified baseline in place first, then building on top of it
-incrementally rather than all at once. Concretely, in order:
+AcquireIQ is being built from a previously proven React, Node/Express, and TypeScript project skeleton rather than starting with an empty repository.
 
-1. Scaffold backend and frontend skeletons (health check, Swagger
-   docs, a status panel that actually calls the backend), confirmed
-   running locally before anything else was added.
-2. Split backend logic into services (`extraction.js`, `matching.js`,
-   `batch.js`) with `server.js` as a thin router, confirmed each
-   endpoint still behaved correctly (including the stub 501s) after
-   the refactor, not just that the server started.
-3. Wrote CI (`code-checks.yml`) and the deploy pipeline
-   (`deploy-to-vps.yml`) against that skeleton, and ran both locally
-   via `act` before ever pushing a first commit, rather than pushing
-   first and debugging failures on GitHub's runner. `dev_scripts/`
-   has the scripts for this (`test_code_checks_yml.bat`,
-   `test_deploy_yml.bat`).
-4. Only after CI, the deploy pipeline, and the health/docs skeleton
-   were all confirmed working does the actual label extraction and
-   matching logic get built inside that structure.
+The baseline already provides a working frontend/backend development loop, health endpoint, Swagger/OpenAPI support, centralized logging, TypeScript strict mode, CI infrastructure, and a service-oriented backend structure. The acquisition-specific behavior is then added incrementally on top of that verified foundation.
 
-Reasoning: infrastructure and pipeline problems are cheaper to find
-and fix against a trivial skeleton than after real business logic is
-layered on top. Testing CI/CD before the first real commit means the
-first commit that lands is already known to build, boot, and deploy
-correctly, rather than discovering a broken pipeline step at the same
-time as debugging new feature code.
+The implementation order is intentionally risk-driven:
 
-This paid off directly: running `test_deploy_yml.bat` caught a real
-bug in `deploy-to-vps.yml` before any commit, a secrets-check step
-had been placed in the wrong job (`verify-build`, meant to be
-secret-free and safe to run locally) instead of the right one
-(`deploy`). Found and fixed locally in seconds via `act`, instead of
-discovered later as a confusing failure on GitHub's runner.
+1. Preserve and verify the frontend/backend baseline.
+2. Replace generic template behavior with the AcquireIQ domain.
+3. Establish the PostgreSQL schema, migrations, constraints, seed data, and indexes.
+4. Implement read APIs and dashboard aggregation.
+5. Implement acquisition creation and status transitions.
+6. Implement parallel approval workflow and concurrency protection.
+7. Add the AI query path behind a provider abstraction.
+8. Validate AI-generated structured filters before database access.
+9. Build the React workflow and AI-search experience against the real API.
+10. Add focused tests around the highest-risk behavior.
+11. Complete the Lead Design Note and final documentation from the actual implementation.
 
-## Pre-commit lint hook: caught a real bug act didn't
+Reasoning: the challenge has several independent correctness boundaries. Building them incrementally makes failures easier to isolate and keeps infrastructure, persistence, workflow, AI, and UI problems from being debugged simultaneously.
 
-`act` (see "Build approach" above) catches a broken workflow step
-once it actually runs, but a plain bash syntax error inside a `run:`
-block got past both `act` and manual review anyway: an apostrophe
-inside a single-quoted `ssh '...'` remote command in
-`deploy-to-vps.yml` (`cPanel's`, closing the quote early, with the
-rest of the script then parsed as literal shell) reached a real
-GitHub Actions run and broke the "Confirm Apache has the ProxyPass
-rule" step in production, not caught locally first this time.
+Tradeoff: this approach spends some time maintaining a clean baseline and explicit boundaries instead of immediately producing visible features. The benefit is lower integration risk and a codebase whose behavior is easier to explain and defend.
 
-Added a git pre-commit hook (`.githooks/pre-commit`,
-`dev_scripts/setup_git_hooks.bat` for one-time setup) that runs
-`actionlint` against staged workflow YAML and `shellcheck` against
-staged shell scripts, blocking the commit on a syntax error before it
-can reach GitHub at all, a cheaper and earlier check than waiting for
-`act` to execute the step. Verified against the actual bug, not just
-assumed to work: run against a throwaway git repo with the original
-broken `deploy-to-vps.yml` staged, `actionlint` blocked the commit
-and correctly identified the exact line (`SC1011: This apostrophe
-terminated the single quoted string!`); run again against the fixed
-file, the commit went through clean.
+## Backend language: TypeScript
 
-## Backend language: converted to TypeScript
+The backend uses Node.js, Express, and TypeScript with `strict: true`.
 
-The backend started as plain JavaScript (steps 1-4 above describe
-that phase accurately) and was later converted to TypeScript in full,
-`server.ts`, `swagger-spec.ts`, and all three `services/*.ts` files,
-compiled via `tsc` with `strict: true`. This is a real conversion,
-not the parallel-files pattern insight-engine-rag uses (where
-type-checked `.ts` files exist alongside the JS originals but the
-JS is what actually deploys). Here the `.js` originals were deleted;
-TypeScript is the only source, and the compiled `dist/` output is
-what runs in both dev (via `tsx`, no manual compile step) and
-production (Dockerfile compiles then runs `dist/server.js`).
+The API layer should remain thin. HTTP-specific concerns belong in route handlers, while acquisition rules, workflow decisions, persistence, and AI-provider behavior belong behind explicit service boundaries.
 
-Reasoning: this project's service-split architecture already leans on
-explicit interfaces as the contract between `server.ts` and each
-service (`ExtractedLabelFields`, `ApplicationData`, `MatchResult`,
-`BatchItem`), which is exactly what TypeScript's type system is for.
-Enforcing those contracts at compile time, rather than only in
-comments, catches a mismatched field name or a wrong argument shape
-before the code runs, not after. CI reflects this: the old plain-JS
-`node --check` syntax check was replaced with a real `npx tsc --noEmit`
-type-check under `strict: true`, in both `code-checks.yml` and
-`deploy-to-vps.yml`'s `verify-build` job.
+Reasoning: AcquireIQ has several contracts where accidental shape drift would be costly, particularly request/response DTOs, approval records, status transitions, AI structured filters, and database results. TypeScript provides compile-time checking across those boundaries.
 
-## Time constraint
+Tradeoff: TypeScript adds build and type-definition overhead compared with plain JavaScript, but that cost is justified by the number of explicit contracts in the application.
 
-Interviewer stated verbally (not in the README) not to spend more
-than 1 hour on this assessment. Given the actual scope (vision/OCR
-extraction, exact legal-text matching, batch handling, an accessible
-UI, and a live deployment), that estimate is not grounded in the
-reality of what this task involves, unless it assumes a pre-built
-environment already configured (repo scaffolded, CI/CD already
-working, hosting already provisioned and proven, no errors
-encountered anywhere in the chain) and a zero-error run through every
-step. That is not a realistic assumption for a fresh build.
+## PostgreSQL as the authoritative state store
 
-Concrete evidence, not just assertion: even the deployment
-infrastructure alone, separate from the actual label-matching logic
-this assessment is meant to evaluate, took real, non-trivial
-debugging to get working end to end. Getting the live health check to
-pass involved diagnosing an Apache path-collision with an existing
-app, a wrong proxy target that silently dropped the required `/api/`
-prefix, and a cPanel-specific reload command that reports success
-while not actually reloading the config, each confirmed only by
-direct testing (backend curl, config syntax check, vhost dump, error
-log inspection), not guesswork. None of that is unusual or a sign of
-a poorly-run assessment, it's the normal texture of standing up a new
-service on shared infrastructure. It is, however, real evidence that
-one hour covers essentially none of the actual work this task
-requires, let alone the label-matching logic itself.
+PostgreSQL is the authoritative source for acquisition requests, vendors, contracts, approvals, protests, and users.
 
-Documented as an accommodation consideration separately. Scope
-decisions throughout this log are made assuming more than an hour was
-actually available, with the narrowest complete core prioritized over
-a broader partial one.
+Application code will enforce business rules, but persistent invariants should also be protected by database constraints where practical.
 
-## Architecture
+The schema should favor explicit relational modeling over storing workflow state in opaque JSON structures. The required domain entities have meaningful relationships and need to support filtering, joins, aggregation, and concurrency-safe updates.
 
-**Services split into separate files, server.ts kept thin.**
-`extraction.ts`, `matching.ts`, and `batch.ts` are plain functions
-with no Express dependency, decoupled from `req`/`res`. Chosen so
-each one can become a Lambda handler later with a thin wrapper, no
-rewrite of the underlying logic. `server.ts` only parses requests,
-calls a service, and shapes the response. TypeScript interfaces
-(`ExtractedLabelFields`, `ApplicationData`, `MatchResult`, `BatchItem`)
-make each service's input/output contract explicit and checked at
-compile time, see "Backend language: converted to TypeScript" above.
+Reasoning: acquisition workflow state is transactional business data. PostgreSQL provides the relational constraints, transactions, locking behavior, and aggregation capabilities needed by the challenge without introducing additional infrastructure.
 
-**Deployment: Docker container behind Apache reverse proxy on a
-self-hosted VPS**, same pattern as insight-engine-rag, rather than
-AWS/Azure. No meaningful performance difference at this scale (low
-review-window traffic), and reusing an already-working deploy
-pipeline is faster than standing up new cloud infra under the time
-constraint. Trade-off: no managed redundancy, single VPS, accepted
-as reasonable for a short-lived demo.
+Tradeoff: a normalized relational model requires more joins than a denormalized document model, but it makes relationships and workflow invariants substantially clearer.
 
-**Why Docker specifically, not just a plain Node process on the
-VPS.** Not a stylistic preference, a hard requirement discovered when
-insight-engine-rag was first deployed to this same VPS: the host's
-native Node installation is broken and extremely outdated, missing
-shared libraries it needs to run at all (e.g. `libbrotlidec.so.1`),
-confirmed directly, not assumed. Node cannot run natively on this
-host, full stop, which is why both the backend and the frontend's
-build step run inside Docker containers (the frontend using a
-throwaway container as a build environment, since it can't build on
-the host either) rather than as ordinary host processes.
+## Parallel approval modeling
 
-**Frontend theme reused from Insight Engine RAG** (same CSS custom
-properties, card/button/input styling) for visual consistency across
-MVPs and to avoid spending build time on a new design system.
+Parallel approval is modeled using individual approval records. Multiple approvers can share the same `stage_sequence`, which means they belong to the same logical approval stage.
 
-## Warning statement matching
+A request does not advance merely because one approval at the current sequence has completed. Every approval assigned to the current `stage_sequence` must reach the required decision state before the workflow can advance.
 
-Canonical text is fixed by 27 CFR 16.21, not a design choice:
+Reasoning: representing each approver as an independent row preserves who decided what and allows the application to determine stage completion with a database query rather than encoding a list of approvers inside one mutable field.
 
-> GOVERNMENT WARNING: (1) According to the Surgeon General, women
-> should not drink alcoholic beverages during pregnancy because of
-> the risk of birth defects. (2) Consumption of alcoholic beverages
-> impairs your ability to drive a car or operate machinery, and may
-> cause health problems.
+Tradeoff: determining whether a stage is complete requires querying the set of approvals for the current stage. That is preferable to duplicating aggregate approval state that could become inconsistent.
 
-Per 27 CFR 16.22, "GOVERNMENT WARNING" must be all-caps and bold, the
-remainder must not be bold. This is hardcoded in `services/matching.ts`
-and checked exactly, with no normalization applied, unlike other
-fields. A prior real-world case (title-case "Government Warning")
-was rejected by a human reviewer, so this field intentionally has
-zero tolerance.
+The exact rejection behavior and final workflow transitions will be documented once implemented and verified.
 
-## Fuzzy matching on other fields
+## Status transitions are a business rule, not arbitrary CRUD
 
-Interview notes flagged a real tension: "STONE'S THROW" vs "Stone's
-Throw" is technically a mismatch but obviously the same brand.
-Decision: normalize (case-fold, strip punctuation, collapse
-whitespace) before comparing. If normalized values still don't
-match, flag for human review rather than auto-reject or silently
-auto-approve. AI/semantic comparison considered as an optional later
-pass, not the primary mechanism, since a wrong auto-approve is worse
-than an extra review. This is a judgment call, not sourced from the
-README.
+`PATCH /requests/:id/status` is not treated as a generic update endpoint.
 
-## Field validation depth
+The server owns the set of valid state transitions. A client may request a transition, but it cannot directly overwrite workflow state or skip required stages.
 
-Class/type designation and net contents get a presence and format
-check (field exists, net contents parses as a valid volume unit)
-rather than full regulatory validation against TTB's class/type
-rules, which vary by beverage type. Arbitrary line drawn given the
-time constraint; noted as a limitation, not a completeness claim.
+Invalid jumps must be rejected. Rejected requests must not be silently revived through an arbitrary status update.
 
-## Scope: image quality
+Reasoning: the current status is part of the acquisition workflow, not merely editable display data. Centralizing transition rules gives every caller the same behavior and makes the rules testable.
 
-Poor-quality images (angled, glare, low light) are out of scope.
-Jenny's interview note called this "maybe out of scope for a
-prototype" directly, so this isn't an inference.
+Tradeoff: adding a new workflow state requires intentionally updating transition logic rather than simply accepting a new string. That additional friction is desirable for workflow-critical state.
 
-## Scope: beverage category
+## Concurrency-safe workflow transitions
 
-Test labels cover distilled spirits only, matching the README's own
-worked example ("OLD TOM DISTILLERY"). Beer and wine have different
-field rules per TTB and would need separate handling, noted as a
-limitation rather than built out.
+The challenge explicitly requires status updates to remain correct when two updates arrive at nearly the same time.
 
-## Speed vs. judgment trade-off
+The implementation will therefore make the transition check and the state update part of the same database transaction and use PostgreSQL concurrency control around the current request state.
 
-Where the 5-second-per-label target and more sophisticated matching
-logic conflict, speed wins. Sarah's account of the prior vendor pilot
-is explicit that it was abandoned for being too slow, not for weak
-matching logic. A fast tool with a documented judgment limitation is
-preferred over a slow tool with better judgment.
+The important invariant is that two callers must not both observe the same stale state and independently perform transitions that should have been mutually exclusive.
 
-## Batch size
+A representative race is:
 
-Designed against the 200-300 figure mentioned anecdotally by Sarah.
-Demo/test batches kept smaller (10-20) to keep the 5-second-per-label
-target easy to verify live during review.
+```text
+Request currently in state A
 
-## Auth
+Caller 1 reads A
+Caller 2 reads A
 
-None. Marcus stated directly they are "not storing anything sensitive
-for this exercise," which settles this rather than requiring a guess.
-An open demo URL is used.
+Caller 1 attempts A -> B
+Caller 2 attempts A -> B
 
-## Deployment platform
+Only behavior consistent with the committed database state
+may be accepted.
+```
 
-Self-hosted VPS (Bluehost), not a free-tier platform like
-Vercel/Render/Railway, for two separate reasons. First, cost: paying
-for new hosting just to run an unpaid take-home assessment isn't a
-reasonable ask, and there was no need to, this VPS is already paid
-for and running for other purposes (it already hosts
-insight-engine-rag and other sites), so deploying here adds no new
-expense at all. Second, speed: the existing insight-engine-rag
-deploy pipeline was already available and faster to reuse than
-standing up new cloud infra under the time constraint. Documented
-explicitly since nothing in the README specifies a required or
-preferred hosting platform.
+The final locking or conditional-update strategy will be recorded here after implementation rather than claiming a mechanism before it exists.
 
-## Apache reload gotcha (cPanel-specific)
+Testing should deliberately create competing updates rather than relying only on sequential unit tests.
 
-After adding this app's `ProxyPass` rule to the shared Apache config,
-the public endpoint still 404'd even with the config file confirmed
-correct and `apachectl -t` reporting `Syntax OK`. Backend confirmed
-healthy directly (`curl http://127.0.0.1:3002/api/health` returned
-200), ruling out the application. `apachectl -S` confirmed the
-correct vhost was being reached. The actual cause, found by checking
-Apache's error log directly rather than continuing to guess:
-`systemctl restart httpd` completed with no error but did not
-actually reload the running config, Apache kept serving the previous
-version. `/usr/local/cpanel/scripts/restartsrv_httpd --graceful`
-fixed it immediately, confirmed by a real `curl` returning the
-correct JSON body through the public HTTPS URL.
+## Recovery options considered
 
-Documented here because `systemctl restart httpd` looks like the
-obviously correct command on a service literally named `httpd`, and
-nothing about it failing is visible without checking behavior, not
-just exit codes. On this specific cPanel/EasyApache VPS, use the
-cPanel service script for any future Apache config change, not
-`systemctl` directly.
+Kafka with a dead-letter queue was considered as an option for handling failed work and recovery.
 
-## OpenAPI schema generation: generated, not hand-maintained
+I decided not to use it for this version of AcquireIQ because PostgreSQL already holds the authoritative state of the acquisition workflow. If something fails, the application can determine what successfully completed and what state the request is actually in, then recover or retry from that known state.
 
-`swagger-spec.ts`'s `components.schemas` block was originally
-hand-written, and went stale against the real code more than once
-during this build (endpoints still documented as `501` stubs after
-they were implemented, a field-formatting shape change in
-`ExtractedLabelFields` never reflected in the spec). Rather than keep
-manually syncing a parallel copy of every response type,
-`scripts/generate-openapi-schemas.ts` generates
-`schemas.generated.ts` directly from the actual exported TS
-interfaces (`FieldMatchResult`, `MatchResult`, `ApplicationData`,
-`BatchResultItem`, `ExtractedLabelFields`) using
-`ts-json-schema-generator`, then fixes up a handful of JSON-Schema-
-to-OpenAPI-3.0 differences (nullable unions, `$ref` path rewriting)
-that library doesn't handle natively.
+Adding Kafka would introduce another system that has to be configured, operated, monitored, and kept consistent with the database. AcquireIQ does not currently have a requirement that justifies that additional complexity.
 
-`paths` (routes, verbs, request bodies, status codes) stays
-hand-written. Express doesn't carry that metadata anywhere a
-generator could read it from without a heavier framework change
-(e.g. `tsoa`'s decorated-controller pattern), which would cut against
-the "thin router, plain-function services" split documented above.
-Generating the schemas half while hand-maintaining the paths half was
-the narrower fix for the actual problem (response shapes drifting),
-not a full OpenAPI-generation rewrite.
+Kafka and a dead-letter queue would become more attractive if AcquireIQ grew into a system with large amounts of asynchronous work, several independent systems consuming the same events, or a need to replay events later.
 
-Runs at build time only (`npm run generate:schemas`, wired into the
-Dockerfile before `tsc`, and into both `code-checks.yml` and
-`deploy-to-vps.yml`'s `verify-build` job before their own type-check
-steps), never against a live request. `schemas.generated.ts` is a
-build artifact, not something to hand-edit.
+Reasoning: recovery does not automatically require a message broker. The recovery mechanism should fit the way the application actually works. For the current system, PostgreSQL already provides the durable state needed to recover safely.
 
-One real bug surfaced by this: the `generate:schemas` npm script
-originally invoked `ts-node` directly (`ts-node scripts/generate-
-openapi-schemas.ts`). That hits a known, long-standing `ts-node` CLI
-bootstrap bug (`Cannot find module`, referencing an internal probe
-file `imaginaryUncacheableRequireResolveScript`) inconsistently
-across Node/`ts-node`/OS combinations, confirmed via multiple
-`TypeStrong/ts-node` GitHub issues going back to 2019, still
-reproducing on Node 22 in 2025. It didn't reproduce in every
-environment tested, which is exactly what made it worth documenting:
-a fix that "works on my machine" isn't verified. The script now runs
-via `node -r ts-node/register scripts/generate-openapi-schemas.ts`
-instead, which loads the same TypeScript-execution hook without going
-through the buggy CLI bootstrap.
+Tradeoff: this keeps the architecture simpler, but it does not provide Kafka's event-streaming and replay capabilities. If those capabilities become useful as AcquireIQ grows, Kafka remains a deliberate future option rather than a technology that was simply overlooked.
+
+## API contract
+
+Required acquisition endpoints are:
+
+```text
+GET    /requests
+GET    /requests/:id
+POST   /requests
+PATCH  /requests/:id/status
+GET    /dashboard
+POST   /assist/query
+```
+
+`GET /requests` supports filtering by status and priority.
+
+`GET /requests/:id` returns the acquisition detail together with its approval chain and associated contract information.
+
+`GET /dashboard` performs real database aggregation rather than loading the complete request set and calculating dashboard values in application memory.
+
+Reasoning: keeping aggregation and filtering close to the database reduces unnecessary data movement and makes the API contract reflect the questions the UI actually needs answered.
+
+The exact response envelopes, pagination decisions, and error shapes will be documented from the implemented API.
+
+## OpenAPI schemas: generated where practical
+
+The project baseline generates OpenAPI component schemas from exported TypeScript interfaces rather than maintaining a second handwritten copy of every response shape.
+
+Route metadata such as paths, methods, request bodies, and status codes remains explicitly documented.
+
+Reasoning: generated schemas reduce drift between TypeScript contracts and API documentation while avoiding a framework rewrite solely for fully generated OpenAPI.
+
+Tradeoff: generation adds a build step and still leaves route-level documentation to maintain. It solves schema-shape drift without pretending that the entire HTTP contract can be inferred automatically from the current Express structure.
+
+## AI-assisted search: interpretation, not authority
+
+The AI feature is deliberately narrow.
+
+The LLM receives natural language and returns a structured representation of the requested acquisition filters. It does not receive authority to construct or execute SQL.
+
+The intended trust boundary is:
+
+```text
+User natural language
+        |
+        v
+LLM provider
+        |
+        v
+Untrusted structured filter
+        |
+        v
+Application schema/domain validation
+        |
+        v
+Validated internal filter
+        |
+        v
+Server-owned parameterized query
+        |
+        v
+PostgreSQL
+```
+
+Reasoning: model output can be malformed, hallucinated, unsupported, or simply wrong. Treating it as untrusted input keeps probabilistic interpretation separate from deterministic application behavior.
+
+This is also why a successful JSON parse is not sufficient validation. Fields and values must be checked against the application's supported filter contract.
+
+## AI provider isolation
+
+LLM-provider-specific code should be isolated behind a small application boundary rather than embedded directly in `/assist/query`.
+
+The route and query service should operate on an internal structured-filter contract. Provider-specific request formatting, response extraction, and provider errors belong in the provider integration.
+
+Reasoning: the acquisition search behavior should not depend on the details of one vendor's SDK or response envelope.
+
+Tradeoff: a provider abstraction introduces another interface in a small prototype. It is justified here because provider separation is directly relevant to reliability, testability, and the challenge requirements.
+
+The actual provider and configuration variables will be recorded after the integration is implemented.
+
+## AI hallucination and malformed-output handling
+
+The AI response must be validated before it influences database access.
+
+Examples of invalid output include:
+
+```text
+Unknown filter field
+Unsupported status value
+Unsupported priority value
+Wrong data type
+Malformed JSON
+Missing required structure
+Unexpected operator
+Out-of-range numeric value
+```
+
+Invalid model output must not be silently converted into an unrestricted query.
+
+The API should instead return an explicit fallback or low-confidence state that the frontend can show to the user.
+
+Reasoning: a plausible-looking but incorrect acquisition result is more dangerous than an explicit statement that the system could not confidently interpret the request.
+
+## AI confidence and fallback are user-visible
+
+AI uncertainty is part of the product behavior, not merely a server-log concern.
+
+The React interface must distinguish a normal interpreted query from a low-confidence or fallback result. Users should be able to tell when the system did not confidently understand their request.
+
+Reasoning: hiding uncertainty would encourage users to treat probabilistic interpretation as deterministic search behavior.
+
+The exact presentation will be documented once the UI is implemented.
+
+## No direct LLM-to-database path
+
+There is intentionally no architectural path from the LLM provider directly to PostgreSQL.
+
+All database access remains owned by the application.
+
+This means:
+
+```text
+LLM -> SQL execution
+```
+
+is not an allowed path.
+
+The allowed path is:
+
+```text
+LLM
+ |
+ v
+Structured filter
+ |
+ v
+Application validation
+ |
+ v
+Parameterized SQL owned by the API
+ |
+ v
+PostgreSQL
+```
+
+This boundary remains true even if the LLM provider changes.
+
+## Dashboard aggregation belongs in PostgreSQL
+
+Dashboard metrics should be produced through database aggregation rather than by retrieving every acquisition request and reducing the data in Node.js.
+
+Reasoning: PostgreSQL is designed to filter and aggregate relational data efficiently. It also avoids transferring rows the dashboard does not need.
+
+Tradeoff: dashboard SQL may be more specialized than generic repository methods, but that specialization reflects an actual API use case.
+
+## Frontend architecture
+
+The React application uses the existing centralized API-client pattern and reusable components rather than issuing ad hoc `fetch` calls throughout the component tree.
+
+The UI must consume the real backend API.
+
+The primary user-facing areas are expected to include:
+
+```text
+Acquisition pipeline
+Acquisition request detail
+Approval chain
+Status actions
+Dashboard information
+AI-assisted search
+AI confidence/fallback state
+Loading state
+Error state
+```
+
+Reasoning: API access and error handling are cross-cutting behavior. Keeping transport concerns centralized makes UI components easier to reason about and keeps backend contract changes localized.
+
+The exact component breakdown will be documented as the interface is implemented.
+
+## Error handling
+
+Expected operational failures should be represented intentionally.
+
+Examples include invalid request data, missing acquisition requests, invalid workflow transitions, concurrent update conflicts, database failures, LLM-provider failures, malformed model responses, and low-confidence AI interpretation.
+
+Reasoning: returning a generic `500` for every failure hides distinctions the frontend and reviewer need to understand.
+
+The final status-code and error-envelope decisions will be documented from the implemented endpoints.
+
+## Testing priorities
+
+Testing effort is weighted toward behavior whose failure could produce incorrect acquisition state or misleading AI results.
+
+Highest-priority areas are:
+
+```text
+Status-transition rules
+Parallel-stage completion
+Concurrent status updates
+Request validation
+Database constraints
+AI structured-filter validation
+Hallucinated AI fields
+Malformed provider output
+AI fallback behavior
+API/database integration
+```
+
+Reasoning: a prototype does not need equal test density everywhere. Workflow correctness and the AI trust boundary carry more risk than static presentation code.
+
+## Scope and time constraint
+
+The challenge specifies approximately 4–6 hours of focused implementation effort.
+
+Scope decisions therefore prioritize a narrow, complete, defensible vertical slice over implementing every possible acquisition-management feature.
+
+Authentication and production deployment are explicitly skippable challenge concerns and are not priorities for the core implementation.
+
+Stretch goals should only be attempted after the required behavior works end to end.
+
+Candidate stretch areas include:
+
+```text
+Concurrency test suite
+Protest resolution endpoint
+AI query evaluation set
+Pagination
+API versioning
+```
+
+Anything not completed will be identified explicitly rather than implied to exist.
+
+## AI-assisted development workflow
+
+AI tools may be used during development, but generated output is not assumed to be correct.
+
+Code, documentation, architecture descriptions, and generated artifacts must be reviewed against the actual challenge requirements and the running application.
+
+The development experience itself reinforces the same reliability principle used inside AcquireIQ: AI can accelerate work, but its output requires verification.
+
+When AI-generated work introduces errors or rework, that is treated as a tooling and validation problem rather than hidden from the engineering record. In a production environment, model choice and AI-assisted development tooling would be evaluated empirically based on accuracy, rework, latency, cost, and developer productivity rather than assumed from brand or familiarity.
+
+## Scale consideration
+
+The challenge does not require large-scale production architecture, so the prototype should avoid speculative infrastructure.
+
+At roughly 10x the prototype workload, likely areas to revisit include database indexing based on observed query plans, pagination for request listings, dashboard-query cost, connection-pool sizing, and external LLM latency/rate limits.
+
+The final Lead Design Note will identify one concrete 10x concern based on the implemented system and explain the first production change that should address it.
+
+## Lead Design Note
+
+The final 300–500 word Lead Design Note will be written after implementation so that it reflects actual engineering decisions rather than hypothetical ones.
+
+It must address:
+
+1. the most important schema-modeling decision and its tradeoff
+2. one API contract decision that would change with additional time
+3. AI hallucination/provider-failure handling and how reliability would be measured in production
+4. one concern at approximately 10x scale and how it would be addressed
+5. the single highest-value next improvement for a real contracting office
+
+This running document provides the implementation history from which that shorter final note can be derived.
+
+## Documentation discipline
+
+This file distinguishes between decisions already made, behavior already implemented, and intended implementation.
+
+Statements about unfinished concurrency mechanisms, LLM-provider selection, UI behavior, database commands, or tests should be updated only after the corresponding implementation has been verified.
+
+The goal is for the repository documentation to describe the system that actually exists, not the system that was originally imagined.
