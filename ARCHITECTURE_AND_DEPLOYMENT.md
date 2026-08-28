@@ -291,16 +291,20 @@ Reusing infrastructure is an engineering decision, not an attempt to treat old a
 
 ## 2.1 Why deploy when the challenge does not require it
 
-The iAdeptive challenge does not require production deployment.
+The iAdeptive challenge does not require production deployment or a publicly accessible instance.
 
-AcquireIQ will nevertheless be deployed to the existing VPS because the deployment scaffolding already exists and the incremental cost is small compared with standing up deployment infrastructure from scratch.
+AcquireIQ will nevertheless be deployed to the existing VPS because the deployment scaffolding already exists and the incremental cost is small compared with standing up deployment infrastructure from scratch. This is also a deliberate decision to go beyond the challenge requirements: AcquireIQ is intended to remain available after the assessment as another public showcase of the engineering work, rather than existing only as a repository created for an interview exercise.
 
-The live deployment serves two purposes:
+The live deployment therefore serves two purposes:
 
 1. It gives reviewers an optional working instance in addition to the repository.
-2. It preserves AcquireIQ as a public portfolio example after the assessment.
+2. It preserves AcquireIQ as a publicly accessible portfolio application demonstrating the completed architecture, backend, frontend, database, and AI integration.
 
-This is additional work enabled by existing infrastructure, not a dependency of the challenge implementation.
+The challenge suggests a focused implementation window, but the additional time spent beyond that window is intentional. Once the decision was made to retain AcquireIQ as a public portfolio application, stopping at an artificial time boundary and returning later to complete the same work would be inefficient while the architecture, implementation decisions, and codebase are already fresh.
+
+Unfortunately, today's technology hiring market increasingly expects candidates to present exceptionally polished and complete work during the interview process. That incentive is different from normal product delivery. In a professional delivery environment, the objective is correctness, maintainability, fitness for purpose, and business value—not pursuing perfection beyond what the requirements and priorities justify.
+
+The additional effort here is therefore a deliberate expansion of the project's purpose, not an inability to control scope. It is enabled by existing infrastructure and is not a dependency of the challenge implementation.
 
 The repository remains the authoritative assessment deliverable.
 
