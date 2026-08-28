@@ -13,6 +13,7 @@
 //   GET  /requests      — acquisition request list/search
 //   GET  /requests/:id  — acquisition request detail
 //   POST /requests      — create acquisition request
+//   PATCH /requests/:id/status — advance acquisition workflow status
 //   GET  /dashboard     — acquisition pipeline summary
 
 
@@ -26,8 +27,18 @@ import swaggerUi from "swagger-ui-express";
 // them to the corresponding .ts source during development and preserves the
 // .js paths for the compiled files that Node executes from dist/.
 import { ApiError } from "./errors/api-error.js";
-import { LOG_LEVEL, logSummary, requestLogger } from "./logging/logger.js";
-import {  createRequest, getDashboard, getRequestById, getRequests, requestorExists, type RequestFilters, type CreateAcquisitionRequest } from "./services/requests.js";
+import { LOG_LEVEL, requestLogger } from "./logging/logger.js";
+import {
+  createRequest,
+  getDashboard,
+  getRequestById,
+  getRequests,
+  requestorExists,
+  updateRequestStatus,
+  type AcquisitionRequestStatus,
+  type CreateAcquisitionRequest,
+  type RequestFilters
+} from "./services/requests.js";
 import swaggerSpec from "./swagger-spec.js";
 
 const app = express();
@@ -283,36 +294,61 @@ app.post(
   }
 );
 
+
 /**
- * Central API error boundary.
+ * PATCH /requests/:id/status
  *
- * Expected application errors retain their intended HTTP status. Unexpected
- * failures return a generic response so internal implementation details are
- * not exposed to clients.
- *
- * Error middleware must remain after the route registrations.
+ * Requests a workflow transition. The service owns the state machine and
+ * performs validation while holding a PostgreSQL row lock so concurrent
+ * updates cannot validate against stale request state.
  */
-app.use(
-  (
-    error: unknown,
-    _req: Request,
-    res: Response,
-    _next: NextFunction
-  ) => {
-    if (error instanceof ApiError) {
-      res.status(error.statusCode).json({
-        ok: false,
-        error: error.message
-      });
-      return;
+app.patch(
+  "/requests/:id/status",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!/^\d+$/.test(req.params.id)) {
+        throw new ApiError(400, "Request id must be a positive integer.");
+      }
+
+      const id = Number(req.params.id);
+
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new ApiError(400, "Request id must be a positive integer.");
+      }
+
+      const status = req.body?.status;
+
+      if (typeof status !== "string" || !VALID_STATUSES.has(status)) {
+        throw new ApiError(400, "Invalid status.");
+      }
+
+      const result = await updateRequestStatus(
+        id,
+        status as AcquisitionRequestStatus
+      );
+
+      if (result.outcome === "not_found") {
+        throw new ApiError(404, "Acquisition request not found.");
+      }
+
+      if (result.outcome === "invalid_transition") {
+        throw new ApiError(
+          422,
+          `Invalid status transition from ${result.currentStatus} to ${result.requestedStatus}.`
+        );
+      }
+
+      if (result.outcome === "approval_incomplete") {
+        throw new ApiError(
+          422,
+          `Request cannot be approved while approvals remain incomplete or rejected. Pending: ${result.pendingCount}; rejected: ${result.rejectedCount}.`
+        );
+      }
+
+      res.json(result.request);
+    } catch (error) {
+      next(error);
     }
-
-    console.error(error);
-
-    res.status(500).json({
-      ok: false,
-      error: "Internal server error."
-    });
   }
 );
 
@@ -332,6 +368,56 @@ app.get(
     } catch (error) {
       next(error);
     }
+  }
+);
+
+
+/**
+ * Central API error boundary.
+ *
+ * Expected application errors retain their intended HTTP status. Unexpected
+ * failures return a generic response so internal implementation details are
+ * not exposed to clients.
+ *
+ * Error middleware must remain after the route registrations.
+ */
+app.use(
+  (
+    error: unknown,
+    _req: Request,
+    res: Response,
+    _next: NextFunction ) => {
+    if (error instanceof ApiError)
+	{
+      res.status(error.statusCode).json({
+        ok: false,
+        error: error.message
+      });
+      return;
+    }
+
+    // express.json() reports malformed JSON as a SyntaxError with
+    // status 400 and type "entity.parse.failed".
+    if (
+      error instanceof SyntaxError &&
+      "status" in error &&
+      (error as { status?: number }).status === 400 &&
+      "type" in error &&
+      (error as { type?: string }).type === "entity.parse.failed"
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: "Malformed JSON body."
+      });
+      return;
+    }
+
+    console.error(error);
+
+    res.status(500).json({
+      ok: false,
+      error: "Internal server error."
+    });
   }
 );
 

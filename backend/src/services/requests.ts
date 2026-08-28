@@ -49,6 +49,50 @@ export interface CreateAcquisitionRequest {
   fiscalYear: number;
 }
 
+
+/**
+ * Client payload for requesting a workflow status transition.
+ *
+ * @openapi
+ */
+export interface UpdateAcquisitionRequestStatus {
+  status: "draft" | "submitted" | "in_review" | "approved" | "awarded" | "rejected";
+}
+
+export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
+
+export type StatusTransitionResult =
+  | { outcome: "updated"; request: AcquisitionRequest }
+  | { outcome: "not_found" }
+  | {
+      outcome: "invalid_transition";
+      currentStatus: AcquisitionRequestStatus;
+      requestedStatus: AcquisitionRequestStatus;
+    }
+  | {
+      outcome: "approval_incomplete";
+      pendingCount: number;
+      rejectedCount: number;
+    };
+
+/**
+ * Fixed server-owned acquisition workflow.
+ *
+ * Clients request a target state, but only transitions listed here may be
+ * applied. Awarded and rejected are terminal because they have no outgoing
+ * transitions.
+ */
+const VALID_STATUS_TRANSITIONS: Readonly<
+  Record<AcquisitionRequestStatus, readonly AcquisitionRequestStatus[]>
+> = {
+  draft: ["submitted"],
+  submitted: ["in_review", "rejected"],
+  in_review: ["approved", "rejected"],
+  approved: ["awarded"],
+  awarded: [],
+  rejected: []
+};
+
 /**
  * Aggregate values returned by the acquisition dashboard endpoint.
  *
@@ -300,3 +344,107 @@ export async function getDashboard(): Promise<DashboardSummary> {
     openProtestCount: row.openProtestCount
   };
 }
+
+/**
+ * Applies one acquisition-request status transition atomically.
+ *
+ * The request row is locked before the current status is inspected. Concurrent
+ * callers therefore serialize on the same authoritative row and cannot both
+ * validate against stale workflow state.
+ *
+ * Moving from in_review to approved additionally requires every configured
+ * approval assignment for the request to have an approved decision. A pending
+ * or rejected approval prevents the request from becoming approved.
+ */
+export async function updateRequestStatus(
+  id: number,
+  requestedStatus: AcquisitionRequestStatus
+): Promise<StatusTransitionResult> {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const locked = await client.query(
+      `
+        SELECT status
+        FROM acquisition_requests
+        WHERE id = $1
+        FOR UPDATE
+      `,
+      [id]
+    );
+
+    if (locked.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return { outcome: "not_found" };
+    }
+
+    const currentStatus = locked.rows[0].status as AcquisitionRequestStatus;
+    const allowedTargets = VALID_STATUS_TRANSITIONS[currentStatus];
+
+    if (!allowedTargets.includes(requestedStatus)) {
+      await client.query("ROLLBACK");
+      return {
+        outcome: "invalid_transition",
+        currentStatus,
+        requestedStatus
+      };
+    }
+
+    if (currentStatus === "in_review" && requestedStatus === "approved") {
+      const approvalState = await client.query(
+        `
+          SELECT
+            COUNT(*) FILTER (WHERE decision = 'pending')::int AS "pendingCount",
+            COUNT(*) FILTER (WHERE decision = 'rejected')::int AS "rejectedCount"
+          FROM approvals
+          WHERE acquisition_request_id = $1
+        `,
+        [id]
+      );
+
+      const pendingCount = approvalState.rows[0].pendingCount as number;
+      const rejectedCount = approvalState.rows[0].rejectedCount as number;
+
+      if (pendingCount > 0 || rejectedCount > 0) {
+        await client.query("ROLLBACK");
+        return {
+          outcome: "approval_incomplete",
+          pendingCount,
+          rejectedCount
+        };
+      }
+    }
+
+    const updated = await client.query(
+      `
+        UPDATE acquisition_requests
+        SET status = $2
+        WHERE id = $1
+        RETURNING id
+      `,
+      [id, requestedStatus]
+    );
+
+    await client.query("COMMIT");
+
+    const request = await getRequestById(updated.rows[0].id as number);
+
+    if (!request) {
+      throw new Error("Updated acquisition request could not be reloaded.");
+    }
+
+    return { outcome: "updated", request };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Preserve the original transaction error.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+

@@ -136,5 +136,26 @@ export const generatedSchemas: Record<string, unknown> = {
     ],
     "additionalProperties": false,
     "description": "Aggregate values returned by the acquisition dashboard endpoint."
+  },
+  "UpdateAcquisitionRequestStatus": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "submitted",
+          "in_review",
+          "approved",
+          "awarded",
+          "rejected"
+        ]
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "additionalProperties": false,
+    "description": "Client payload for requesting a workflow status transition."
   }
 } as const;

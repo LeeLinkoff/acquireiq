@@ -315,7 +315,89 @@ const swaggerSpec = {
 			}
 		  }
 		}
-	  }
+	  },
+
+      patch: {
+        tags: ["Acquisition Requests"],
+        summary: "Advance acquisition request status",
+        description:
+          "Requests a fixed workflow transition. The server validates the current state and applies the update transactionally with a PostgreSQL row lock.",
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            description: "Acquisition request ID",
+            schema: {
+              type: "integer",
+              minimum: 1
+            }
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateAcquisitionRequestStatus"
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Status transition applied",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AcquisitionRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            description: "Invalid request ID or status value",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Acquisition request not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            description:
+              "Requested transition violates the workflow state machine or approval requirements",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            description: "Unexpected server error",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     },
 	"/dashboard": {
       get: {
