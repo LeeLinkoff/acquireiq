@@ -1,3 +1,6 @@
+// Shared PostgreSQL connection pool for backend data access.
+// Fail fast at startup if DATABASE_URL is not configured.
+
 import 'dotenv/config';
 import pg from 'pg';
 

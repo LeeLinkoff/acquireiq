@@ -1,52 +1,74 @@
 // swagger-spec.ts
 //
-// OpenAPI 3.0 spec for the generic backend template.
-// components.schemas is kept separate so it can later be generated from
-// real TypeScript interfaces in services/. Run your schema-generation step
-// after changing service interfaces if you adopt automated schema generation.
+// OpenAPI 3.0 specification for the AcquireIQ backend.
 //
-// `paths` remains hand-maintained because route verbs, request bodies, response
-// codes, and descriptions are HTTP metadata rather than TypeScript type data.
+// TypeScript API models tagged with @openapi are generated into
+// schemas.generated.ts. HTTP-specific metadata remains here because routes,
+// parameters, status codes, and descriptions are concerns of the API layer.
+//
+//
+// OpenAPI relationship:
+//
+// The data schemas used here are generated automatically from TypeScript
+// interfaces and types by generate-openapi-schemas.ts.
+//
+// This file does NOT manually define those data models. It defines the HTTP
+// endpoint information, such as routes, HTTP methods, query parameters, and
+// response codes, and references the generated schemas where needed.
+//
+// Swagger UI displays the combined result.
 
-import { generatedSchemas } from "./schemas.generated";
+
+// NodeNext/ESM uses the compiled .js path even though the source module is .ts.
+import { generatedSchemas } from "./schemas.generated.js";
 
 const swaggerSpec = {
   openapi: "3.0.3",
 
   info: {
-    title: "Generic Backend API",
+    title: "AcquireIQ API",
     version: "1.0.0",
     description:
-      "Reusable Express + TypeScript backend template with thin routes, service-layer business logic, " +
-      "health monitoring, and Swagger/OpenAPI documentation."
+      "Backend API for acquisition request management, workflow processing, " +
+      "dashboard reporting, and AI-assisted acquisition search."
   },
 
   servers: [
     {
       url: "/",
-      description: "Same-origin proxy in production or development"
+      description: "AcquireIQ backend"
     }
   ],
 
   tags: [
     {
       name: "Diagnostics",
-      description: "Health and status endpoints"
+      description: "Backend health and status endpoints"
     },
     {
-      name: "Items",
-      description: "Example application API endpoints"
+      name: "Acquisition Requests",
+      description: "Acquisition request retrieval and filtering"
+    },
+	{
+    name: "Dashboard",
+    description: "Acquisition pipeline summary and reporting"
     }
   ],
 
   components: {
     schemas: {
       ...generatedSchemas,
+
       ErrorResponse: {
         type: "object",
         properties: {
-          ok: { type: "boolean", example: false },
-          error: { type: "string" }
+          ok: {
+            type: "boolean",
+            example: false
+          },
+          error: {
+            type: "string"
+          }
         },
         required: ["ok", "error"]
       }
@@ -59,7 +81,7 @@ const swaggerSpec = {
         tags: ["Diagnostics"],
         summary: "Health check",
         description:
-          "Returns service status. Used to confirm the backend is reachable and responding.",
+          "Confirms that the AcquireIQ backend process is reachable and responding.",
         responses: {
           "200": {
             description: "Service is healthy",
@@ -68,10 +90,20 @@ const swaggerSpec = {
                 schema: {
                   type: "object",
                   properties: {
-                    ok: { type: "boolean", example: true },
-                    service: { type: "string", example: "generic-backend" },
-                    timestamp: { type: "string", format: "date-time" }
-                  }
+                    ok: {
+                      type: "boolean",
+                      example: true
+                    },
+                    service: {
+                      type: "string",
+                      example: "acquireiq-backend"
+                    },
+                    timestamp: {
+                      type: "string",
+                      format: "date-time"
+                    }
+                  },
+                  required: ["ok", "service", "timestamp"]
                 }
               }
             }
@@ -79,90 +111,236 @@ const swaggerSpec = {
         }
       }
     },
-
-    "/api/items": {
+    "/requests": {
       get: {
-        tags: ["Items"],
-        summary: "List items",
+        tags: ["Acquisition Requests"],
+        summary: "List acquisition requests",
+        description:
+          "Returns acquisition requests with optional status, priority, and fiscal-year filtering.",
+
+        parameters: [
+          {
+            name: "status",
+            in: "query",
+            required: false,
+            description: "Filter by acquisition request status.",
+            schema: {
+              type: "string",
+              enum: [
+                "draft",
+                "submitted",
+                "in_review",
+                "approved",
+                "awarded",
+                "rejected"
+              ]
+            }
+          },
+          {
+            name: "priority",
+            in: "query",
+            required: false,
+            description: "Filter by acquisition request priority.",
+            schema: {
+              type: "string",
+              enum: [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ]
+            }
+          },
+          {
+            name: "fiscalYear",
+            in: "query",
+            required: false,
+            description: "Filter by four-digit fiscal year.",
+            schema: {
+              type: "integer",
+              minimum: 2000,
+              maximum: 2200,
+              example: 2026
+            }
+          }
+        ],
+
         responses: {
           "200": {
-            description: "Item collection",
+            description: "Acquisition request collection",
             content: {
               "application/json": {
                 schema: {
-                  type: "object",
-                  properties: {
-                    items: {
-                      type: "array",
-                      items: { $ref: "#/components/schemas/Item" }
-                    }
-                  },
-                  required: ["items"]
+                  type: "array",
+                  items: {
+                    $ref: "#/components/schemas/AcquisitionRequest"
+                  }
+                }
+              }
+            }
+          },
+
+          "400": {
+            description: "Invalid filter value",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+
+          "500": {
+            description: "Unexpected server error",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
         }
       },
-
       post: {
-        tags: ["Items"],
-        summary: "Create an item",
+        tags: ["Acquisition Requests"],
+        summary: "Create an acquisition request",
+        description:
+          "Creates a new acquisition request. New requests begin in draft status.",
+
         requestBody: {
           required: true,
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/CreateItemRequest" }
+              schema: {
+                $ref: "#/components/schemas/CreateAcquisitionRequest"
+              }
             }
           }
         },
+
         responses: {
           "201": {
-            description: "Created item",
+            description: "Acquisition request created",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/Item" }
+                schema: {
+                  $ref: "#/components/schemas/AcquisitionRequest"
+                }
               }
             }
           },
+
           "400": {
-            description: "Invalid request",
+            description: "Invalid acquisition request",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/ErrorResponse" }
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+
+          "500": {
+            description: "Unexpected server error",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
         }
       }
     },
-
-    "/api/items/{id}": {
+    "/requests/{id}": {
+		get: {
+		tags: ["Acquisition Requests"],
+		summary: "Get an acquisition request by ID",
+		description: "Returns one acquisition request identified by its numeric ID.",
+		parameters: [
+		  {
+			name: "id",
+			in: "path",
+			required: true,
+			description: "Acquisition request ID",
+			schema: {
+			  type: "integer",
+			  minimum: 1
+			}
+		  }
+		],
+		responses: {
+		  "200": {
+			description: "Acquisition request",
+			content: {
+			  "application/json": {
+				schema: {
+				  $ref: "#/components/schemas/AcquisitionRequest"
+				}
+			  }
+			}
+		  },
+		  "400": {
+			description: "Invalid request ID",
+			content: {
+			  "application/json": {
+				schema: {
+				  $ref: "#/components/schemas/ErrorResponse"
+				}
+			  }
+			}
+		  },
+		  "404": {
+			description: "Acquisition request not found",
+			content: {
+			  "application/json": {
+				schema: {
+				  $ref: "#/components/schemas/ErrorResponse"
+				}
+			  }
+			}
+		  },
+		  "500": {
+			description: "Unexpected server error",
+			content: {
+			  "application/json": {
+				schema: {
+				  $ref: "#/components/schemas/ErrorResponse"
+				}
+			  }
+			}
+		  }
+		}
+	  }
+    },
+	"/dashboard": {
       get: {
-        tags: ["Items"],
-        summary: "Get an item by ID",
-        parameters: [
-          {
-            name: "id",
-            in: "path",
-            required: true,
-            schema: { type: "string" }
-          }
-        ],
+        tags: ["Dashboard"],
+        summary: "Get acquisition pipeline dashboard",
+        description:
+          "Returns database-aggregated request counts by status, total pipeline value, and the number of requests with open protests.",
         responses: {
           "200": {
-            description: "Requested item",
+            description: "Acquisition pipeline dashboard",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/Item" }
+                schema: {
+                  $ref: "#/components/schemas/DashboardSummary"
+                }
               }
             }
           },
-          "404": {
-            description: "Item not found",
+          "500": {
+            description: "Unexpected server error",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/ErrorResponse" }
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }

@@ -39,7 +39,7 @@ SET ROLE acquireiq_app;
 
 \echo Checking/creating users...
 CREATE TABLE IF NOT EXISTS users (
-    id BIGSERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL CHECK (role IN ('requestor', 'approver', 'contracting_officer'))
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 \echo Checking/creating vendors...
 CREATE TABLE IF NOT EXISTS vendors (
-    id BIGSERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     cage_code VARCHAR(5) NOT NULL UNIQUE,
     contact_email TEXT NOT NULL,
@@ -58,10 +58,10 @@ CREATE TABLE IF NOT EXISTS vendors (
 
 \echo Checking/creating acquisition_requests...
 CREATE TABLE IF NOT EXISTS acquisition_requests (
-    id BIGSERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
-    requestor_id BIGINT NOT NULL REFERENCES users(id),
+    requestor_id INTEGER NOT NULL REFERENCES users(id),
     status TEXT NOT NULL DEFAULT 'draft'
         CHECK (status IN ('draft', 'submitted', 'in_review', 'approved', 'awarded', 'rejected')),
     priority TEXT NOT NULL DEFAULT 'medium'
@@ -73,9 +73,9 @@ CREATE TABLE IF NOT EXISTS acquisition_requests (
 
 \echo Checking/creating approvals...
 CREATE TABLE IF NOT EXISTS approvals (
-    id BIGSERIAL PRIMARY KEY,
-    acquisition_request_id BIGINT NOT NULL REFERENCES acquisition_requests(id) ON DELETE CASCADE,
-    approver_id BIGINT NOT NULL REFERENCES users(id),
+    id SERIAL PRIMARY KEY,
+    acquisition_request_id INTEGER NOT NULL REFERENCES acquisition_requests(id) ON DELETE CASCADE,
+    approver_id INTEGER NOT NULL REFERENCES users(id),
     stage_name TEXT NOT NULL,
     stage_sequence INTEGER NOT NULL CHECK (stage_sequence > 0),
     decision TEXT NOT NULL DEFAULT 'pending'
@@ -95,9 +95,9 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 \echo Checking/creating contracts...
 CREATE TABLE IF NOT EXISTS contracts (
-    id BIGSERIAL PRIMARY KEY,
-    acquisition_request_id BIGINT NOT NULL UNIQUE REFERENCES acquisition_requests(id),
-    vendor_id BIGINT NOT NULL REFERENCES vendors(id),
+    id SERIAL PRIMARY KEY,
+    acquisition_request_id INTEGER  NOT NULL UNIQUE REFERENCES acquisition_requests(id),
+    vendor_id INTEGER NOT NULL REFERENCES vendors(id),
     award_date DATE NOT NULL,
     contract_value NUMERIC(14, 2) NOT NULL CHECK (contract_value >= 0),
     period_of_performance_end DATE NOT NULL,
@@ -107,8 +107,8 @@ CREATE TABLE IF NOT EXISTS contracts (
 
 \echo Checking/creating protests...
 CREATE TABLE IF NOT EXISTS protests (
-    id BIGSERIAL PRIMARY KEY,
-    acquisition_request_id BIGINT NOT NULL REFERENCES acquisition_requests(id) ON DELETE CASCADE,
+    id SERIAL PRIMARY KEY,
+    acquisition_request_id INTEGER  NOT NULL REFERENCES acquisition_requests(id) ON DELETE CASCADE,
     filed_at TIMESTAMPTZ NOT NULL,
     resolved_at TIMESTAMPTZ,
     resolution TEXT,
