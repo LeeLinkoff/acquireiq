@@ -1,6 +1,6 @@
 // NodeNext/ESM requires the runtime .js extension for local imports even though the corresponding source module is db/pool.ts.
 import { pool } from "../db/pool.js";
-
+import type { ValidatedAssistFilter } from "./ai/types.js";
 
 /**
  * API-facing representation of an acquisition request.
@@ -76,11 +76,63 @@ export type StatusTransitionResult =
     };
 
 /**
- * Fixed server-owned acquisition workflow.
+ * Acquisition-request workflow state machine.
  *
- * Clients request a target state, but only transitions listed here may be
- * applied. Awarded and rejected are terminal because they have no outgoing
- * transitions.
+ * PLAIN-ENGLISH EXPLANATION:
+ *
+ * This object is a lookup table that defines which status changes are legal.
+ *
+ * The key is the current state. The array is the list of states you're
+ * allowed to go to next. Then .includes() checks whether the requested
+ * next state is in that list.
+ *
+ * Think of each entry as:
+ *   current status: [statuses it is allowed to change to]
+ *
+ * For example:
+ *   submitted: ["in_review", "rejected"]
+ *
+ * means:
+ *   "If the request is currently submitted, it may change to either
+ *    in_review or rejected."
+ *
+ * The workflow code uses the current status as the key to retrieve the
+ * array of allowed next statuses:
+ *
+ *   VALID_STATUS_TRANSITIONS[currentStatus]
+ *
+ * If currentStatus is "submitted", that lookup returns:
+ *   ["in_review", "rejected"]
+ *
+ * The code then uses .includes(requestedStatus) to ask whether the requested
+ * new status appears in that array:
+ *   VALID_STATUS_TRANSITIONS[currentStatus].includes(requestedStatus)
+ *
+ * Examples:
+ *
+ *   submitted -> in_review
+ *   ["in_review", "rejected"].includes("in_review")
+ *   => true, so the transition is allowed
+ *
+ *   submitted -> approved
+ *   ["in_review", "rejected"].includes("approved")
+ *   => false, so the transition is rejected
+ *
+ * The TypeScript Record<> declaration adds compile-time protection around
+ * the lookup table. It requires every AcquisitionRequestStatus to have an
+ * entry, and each allowed destination must itself be a valid
+ * AcquisitionRequestStatus.
+ *
+ * awarded and rejected map to empty arrays because they are terminal states:
+ *   awarded: []
+ *   rejected: []
+ *
+ * Therefore no requested status can pass .includes() for those states.
+ *
+ * This is a table-driven state machine rather than a switch/case state
+ * machine. The transition table defines the legal workflow paths, while
+ * updateRequestStatus() performs the transition and enforces additional
+ * business rules such as approval requirements.
  */
 const VALID_STATUS_TRANSITIONS: Readonly<
   Record<AcquisitionRequestStatus, readonly AcquisitionRequestStatus[]>
@@ -92,6 +144,7 @@ const VALID_STATUS_TRANSITIONS: Readonly<
   awarded: [],
   rejected: []
 };
+
 
 /**
  * Aggregate values returned by the acquisition dashboard endpoint.
@@ -448,3 +501,158 @@ export async function updateRequestStatus(
   }
 }
 
+/**
+ * Searches acquisition requests using filters that have already passed the
+ * deterministic AI validation boundary.
+ *
+ * This function is intentionally part of the acquisition-request service
+ * rather than the AI provider. The AI subsystem determines what the user
+ * appears to be asking for, while this service remains responsible for
+ * translating trusted application filters into database operations.
+ *
+ * Security boundary:
+ *
+ *   LLM output
+ *       |
+ *       v
+ *   AI validation
+ *       |
+ *       v
+ *   ValidatedAssistFilter[]
+ *       |
+ *       v
+ *   searchRequestsByValidatedFilters()
+ *       |
+ *       v
+ *   server-owned SQL + parameterized values
+ *       |
+ *       v
+ *   PostgreSQL
+ *
+ * Neither field names nor SQL operators are copied from model output into
+ * the SQL statement. Both are mapped through application-owned switch
+ * statements below.
+ *
+ * Filter values are supplied separately through PostgreSQL parameters
+ * ($1, $2, ...), preventing those values from becoming executable SQL.
+ */
+export async function searchRequestsByValidatedFilters(
+  filters: readonly ValidatedAssistFilter[]
+): Promise<AcquisitionRequest[]> {
+     /*
+   * Defense in depth:
+   *
+   * AiService already refuses to execute an AI search with zero validated
+   * filters. This check protects the database boundary as well so a future
+   * caller cannot accidentally interpret an empty filter array as
+   * "SELECT every acquisition request."
+   */
+  if (filters.length === 0) {
+    throw new Error(
+      "AI-assisted acquisition search requires at least one validated filter."
+    );
+  }
+  const conditions: string[] = [];
+  const values: Array<string | number> = [];
+
+  /**
+   * Maps the application's logical AI field names to database columns.
+   *
+   * This mapping is server-owned. Even though each filter has already been
+   * validated, we still do not use filter.field directly as SQL text.
+   */
+  const columnForField = (
+    field: ValidatedAssistFilter["field"]
+  ): string => {
+    switch (field) {
+      case "status":
+        return "ar.status";
+
+      case "priority":
+        return "ar.priority";
+
+      case "fiscalYear":
+        return "ar.fiscal_year";
+
+      case "budgetCeiling":
+        return "ar.budget_ceiling";
+    }
+  };
+
+  /**
+   * Maps logical comparison operations to SQL operators.
+   *
+   * As with field names, the SQL operator comes exclusively from
+   * application-owned code rather than provider/model output.
+   */
+  const sqlOperatorFor = (
+    operator: ValidatedAssistFilter["operator"]
+  ): string => {
+    switch (operator) {
+      case "eq":
+        return "=";
+
+      case "gt":
+        return ">";
+
+      case "gte":
+        return ">=";
+
+      case "lt":
+        return "<";
+
+      case "lte":
+        return "<=";
+    }
+  };
+
+  for (const filter of filters) {
+    //
+    // Values are appended separately from the SQL text so PostgreSQL can
+    // bind them as parameters rather than interpreting them as SQL.
+    //
+    values.push(filter.value);
+
+    const parameterNumber = values.length;
+    const column = columnForField(filter.field);
+    const operator = sqlOperatorFor(filter.operator);
+
+    //
+    // column and operator originate only from the closed mappings above.
+    // The actual filter value is represented only by a PostgreSQL parameter.
+    //
+    conditions.push(
+      `${column} ${operator} $${parameterNumber}`
+    );
+  }
+
+   /*
+    * The SQL structure itself is completely application-owned.
+    *
+    * If no filters are supplied, no WHERE clause is added. The AI service will decide whether an empty validated filter set is appropriate before calling this database function.
+   */
+   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+	const result = await pool.query<AcquisitionRequest>(
+	  `
+		SELECT
+		  ar.id,
+		  ar.title,
+		  ar.description,
+		  ar.requestor_id AS "requestorId",
+		  u.name AS "requestorName",
+		  ar.status,
+		  ar.priority,
+		  ar.budget_ceiling AS "budgetCeiling",
+		  ar.fiscal_year AS "fiscalYear",
+		  ar.created_at AS "createdAt"
+		FROM acquisition_requests ar
+		JOIN users u ON u.id = ar.requestor_id
+		${whereClause}
+		ORDER BY ar.created_at DESC, ar.id DESC
+	  `,
+	  values
+	);
+
+  return result.rows as AcquisitionRequest[];
+}

@@ -54,6 +54,58 @@ export const generatedSchemas: Record<string, unknown> = {
     "additionalProperties": false,
     "description": "API-facing representation of an acquisition request. Database column names are mapped to camelCase at the SQL boundary so the rest of the TypeScript application does not depend on PostgreSQL naming."
   },
+  "AssistQueryRequest": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "description": "Client payload for an AI-assisted acquisition pipeline query."
+  },
+  "AssistQueryResponse": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "mode": {
+        "$ref": "#/components/schemas/AssistQueryMode"
+      },
+      "confidence": {
+        "type": "number",
+        "nullable": true
+      },
+      "filters": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ValidatedAssistFilter"
+        }
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AcquisitionRequest"
+        }
+      },
+      "message": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "query",
+      "mode",
+      "confidence",
+      "filters",
+      "results"
+    ],
+    "additionalProperties": false,
+    "description": "API response for AI-assisted acquisition pipeline search."
+  },
   "CreateAcquisitionRequest": {
     "type": "object",
     "properties": {
