@@ -5,8 +5,8 @@ import MainContentCard from './components/MainContentCard.jsx'
 import './App.css'
 
 const APP = {
-  title: 'Application Name',
-  description: 'Reusable React application template with a backend health check and generic tabbed workspace.',
+  title: 'AcquireIQ',
+  description: 'Government Acquisition Pipeline',
 }
 
 export default function App() {

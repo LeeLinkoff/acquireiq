@@ -2,6 +2,10 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+export function getHealth() {
+  return request('/api/health')
+}
+
 export async function request(path, options = {}, retries = 2, delayMs = 750) {
   const url = `${API_BASE}${path}`
   let lastError
@@ -44,6 +48,6 @@ export async function request(path, options = {}, retries = 2, delayMs = 750) {
   throw lastError
 }
 
-export function getHealth() {
-  return request('/api/health')
+export function getRequests() {
+  return request('/requests')
 }
