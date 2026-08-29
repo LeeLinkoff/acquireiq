@@ -46,16 +46,20 @@ const VALID_LEVELS: LogLevel[] = [
 //
 // Converting to lowercase makes values such as SUMMARY or Verbose work as
 // expected.
-const configuredLevel =
-  (process.env.LOG_LEVEL || "none").toLowerCase();
+const configuredLevel = (process.env.LOG_LEVEL || "none").toLowerCase();
 
 // Invalid values intentionally fall back to "none" rather than enabling
 // logging unexpectedly.
-export const LOG_LEVEL: LogLevel =
-  VALID_LEVELS.includes(configuredLevel as LogLevel)
-    ? (configuredLevel as LogLevel)
-    : "none";
-
+export const LOG_LEVEL: LogLevel = (
+									() => {
+										    if (VALID_LEVELS.includes(configuredLevel as LogLevel))
+										    {
+												return configuredLevel as LogLevel;
+										    }
+											console.warn(`[logging] Invalid LOG_LEVEL="${process.env.LOG_LEVEL}". ` + `Valid values are: ${VALID_LEVELS.join(", ")}. Defaulting to "none".`);
+											return "none";
+										   }
+								   )();
 
 // ---------------------------------------------------------------------------
 // Sensitive-data redaction

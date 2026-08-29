@@ -127,27 +127,6 @@ router.get(
         filters.priority = req.query.priority;
       }
 
-      if (req.query.fiscalYear !== undefined) {
-        if (
-          typeof req.query.fiscalYear !== "string" ||
-          !/^\d{4}$/.test(req.query.fiscalYear)
-        ) {
-          throw new ApiError(400, "Invalid fiscalYear filter.");
-        }
-
-        const fiscalYear = Number(req.query.fiscalYear);
-
-        // Keep HTTP validation consistent with the database CHECK constraint.
-        if (fiscalYear < 2000 || fiscalYear > 2200) {
-          throw new ApiError(
-            400,
-            "fiscalYear must be between 2000 and 2200."
-          );
-        }
-
-        filters.fiscalYear = fiscalYear;
-      }
-
       const requests = await getRequests(filters);
 
       res.json(requests);

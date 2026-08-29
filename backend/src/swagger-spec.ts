@@ -28,9 +28,7 @@ const swaggerSpec = {
   info: {
     title: "AcquireIQ API",
     version: "1.0.0",
-    description:
-      "Backend API for acquisition request management, workflow processing, " +
-      "dashboard reporting, and AI-assisted acquisition search."
+    description: "Backend API for acquisition request management, workflow processing, dashboard reporting, and AI-assisted acquisition search."
   },
 
   servers: [
@@ -50,8 +48,13 @@ const swaggerSpec = {
       description: "Acquisition request retrieval and filtering"
     },
 	{
-    name: "Dashboard",
-    description: "Acquisition pipeline summary and reporting"
+      name: "Dashboard",
+      description: "Acquisition pipeline summary and reporting"
+    },
+	{
+      name: "AI Assistance",
+      description:
+      "Natural-language acquisition search using validated AI-produced filters"
     }
   ],
 
@@ -115,9 +118,7 @@ const swaggerSpec = {
       get: {
         tags: ["Acquisition Requests"],
         summary: "List acquisition requests",
-        description:
-          "Returns acquisition requests with optional status, priority, and fiscal-year filtering.",
-
+        description: "Returns acquisition requests with optional status and priority filtering.",
         parameters: [
           {
             name: "status",
@@ -151,20 +152,7 @@ const swaggerSpec = {
               ]
             }
           },
-          {
-            name: "fiscalYear",
-            in: "query",
-            required: false,
-            description: "Filter by four-digit fiscal year.",
-            schema: {
-              type: "integer",
-              minimum: 2000,
-              maximum: 2200,
-              example: 2026
-            }
-          }
         ],
-
         responses: {
           "200": {
             description: "Acquisition request collection",
@@ -260,7 +248,7 @@ const swaggerSpec = {
 		get: {
 		tags: ["Acquisition Requests"],
 		summary: "Get an acquisition request by ID",
-		description: "Returns one acquisition request identified by its numeric ID.",
+		description: "Returns one acquisition request together with its ordered approval chain, associated contract when present, and protest context.",
 		parameters: [
 		  {
 			name: "id",
@@ -279,7 +267,7 @@ const swaggerSpec = {
 			content: {
 			  "application/json": {
 				schema: {
-				  $ref: "#/components/schemas/AcquisitionRequest"
+				  $ref: "#/components/schemas/AcquisitionRequestDetail"
 				}
 			  }
 			}
@@ -315,10 +303,11 @@ const swaggerSpec = {
 			}
 		  }
 		}
-	  },
-
+	  }
+	},
+    "/requests/{id}/status": {
       patch: {
-        tags: ["Acquisition Requests"],
+	    tags: ["Acquisition Requests"],
         summary: "Advance acquisition request status",
         description:
           "Requests a fixed workflow transition. The server validates the current state and applies the update transactionally with a PostgreSQL row lock.",
@@ -418,6 +407,62 @@ const swaggerSpec = {
           },
           "500": {
             description: "Unexpected server error",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+	"/assist/query": {
+      post: {
+        tags: ["AI Assistance"],
+        summary: "Search acquisition requests using natural language",
+        description: "Interprets a natural-language acquisition query using the configured AI provider. AI-produced structured filters are treated as untrusted input and deterministically validated before database access. Only validated filters are mapped to server-owned parameterized SQL. Malformed, invalid, or low-confidence AI output produces an explicit fallback response rather than an unrestricted database query.",
+
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/AssistQueryRequest"
+              },
+              example: {
+                query: "show me high priority acquisition requests"
+              }
+            }
+          }
+        },
+
+        responses: {
+          "200": {
+            description: "AI-assisted acquisition search result or explicit fallback response",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AssistQueryResponse"
+                }
+              }
+            }
+          },
+
+          "400": {
+            description: "Query is missing, empty, not a string, or JSON is malformed",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+
+          "500": {
+            description: "Unexpected server or database error",
             content: {
               "application/json": {
                 schema: {

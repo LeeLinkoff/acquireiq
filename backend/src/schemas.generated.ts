@@ -4,6 +4,123 @@
 // Do not edit manually. TypeScript contracts tagged with @openapi are the source of truth.
 
 export const generatedSchemas: Record<string, unknown> = {
+  "AcquisitionApproval": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "number"
+      },
+      "approverId": {
+        "type": "number"
+      },
+      "approverName": {
+        "type": "string"
+      },
+      "stageName": {
+        "type": "string"
+      },
+      "stageSequence": {
+        "type": "number"
+      },
+      "decision": {
+        "type": "string",
+        "nullable": true
+      },
+      "decidedAt": {
+        "type": "string",
+        "format": "date-time",
+        "nullable": true
+      },
+      "notes": {
+        "type": "string",
+        "nullable": true
+      }
+    },
+    "required": [
+      "id",
+      "approverId",
+      "approverName",
+      "stageName",
+      "stageSequence",
+      "decision",
+      "decidedAt",
+      "notes"
+    ],
+    "additionalProperties": false,
+    "description": "One approval record in an acquisition request's approval chain.\n\nstageSequence determines workflow ordering. Multiple approvals may have the same stageSequence, which represents parallel approvers in that stage."
+  },
+  "AcquisitionContract": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "number"
+      },
+      "vendorId": {
+        "type": "number"
+      },
+      "vendorName": {
+        "type": "string"
+      },
+      "awardDate": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "contractValue": {
+        "type": "string"
+      },
+      "periodOfPerformanceEnd": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "vendorId",
+      "vendorName",
+      "awardDate",
+      "contractValue",
+      "periodOfPerformanceEnd",
+      "status"
+    ],
+    "additionalProperties": false,
+    "description": "Contract associated with an awarded acquisition request.\n\nA request that has not been awarded normally has no contract, so the request-detail response represents this relationship as null."
+  },
+  "AcquisitionProtest": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "number"
+      },
+      "filedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "resolvedAt": {
+        "type": "string",
+        "format": "date-time",
+        "nullable": true
+      },
+      "resolution": {
+        "type": "string",
+        "nullable": true
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "filedAt",
+      "resolvedAt",
+      "resolution",
+      "reason"
+    ],
+    "additionalProperties": false,
+    "description": "Protest associated with an acquisition request.\n\nresolvedAt and resolution remain null while the protest is open."
+  },
   "AcquisitionRequest": {
     "type": "object",
     "properties": {
@@ -53,6 +170,75 @@ export const generatedSchemas: Record<string, unknown> = {
     ],
     "additionalProperties": false,
     "description": "API-facing representation of an acquisition request. Database column names are mapped to camelCase at the SQL boundary so the rest of the TypeScript application does not depend on PostgreSQL naming."
+  },
+  "AcquisitionRequestDetail": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "number"
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "requestorId": {
+        "type": "number"
+      },
+      "requestorName": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "priority": {
+        "type": "string"
+      },
+      "budgetCeiling": {
+        "type": "string"
+      },
+      "fiscalYear": {
+        "type": "number"
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "approvals": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AcquisitionApproval"
+        }
+      },
+      "contract": {
+        "$ref": "#/components/schemas/AcquisitionContract",
+        "nullable": true
+      },
+      "protests": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AcquisitionProtest"
+        }
+      }
+    },
+    "required": [
+      "approvals",
+      "budgetCeiling",
+      "contract",
+      "createdAt",
+      "description",
+      "fiscalYear",
+      "id",
+      "priority",
+      "protests",
+      "requestorId",
+      "requestorName",
+      "status",
+      "title"
+    ],
+    "additionalProperties": false,
+    "description": "Complete representation returned by GET /requests/:id.\n\nThe collection endpoints intentionally continue using AcquisitionRequest. Only the detail endpoint expands the request with workflow and award context required by the challenge."
   },
   "AssistQueryRequest": {
     "type": "object",

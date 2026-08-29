@@ -24,6 +24,72 @@ export interface AcquisitionRequest
 }
 
 /**
+ * One approval record in an acquisition request's approval chain.
+ *
+ * stageSequence determines workflow ordering. Multiple approvals may have the same stageSequence, which represents parallel approvers in that stage.
+ *
+ * @openapi
+ */
+export interface AcquisitionApproval {
+  id: number;
+  approverId: number;
+  approverName: string;
+  stageName: string;
+  stageSequence: number;
+  decision: string | null;
+  decidedAt: Date | null;
+  notes: string | null;
+}
+
+/**
+ * Contract associated with an awarded acquisition request.
+ *
+ * A request that has not been awarded normally has no contract, so the request-detail response represents this relationship as null.
+ *
+ * @openapi
+ */
+export interface AcquisitionContract {
+  id: number;
+  vendorId: number;
+  vendorName: string;
+  awardDate: Date;
+  contractValue: string;
+  periodOfPerformanceEnd: Date;
+  status: string;
+}
+
+/**
+ * Protest associated with an acquisition request.
+ *
+ * resolvedAt and resolution remain null while the protest is open.
+ *
+ * @openapi
+ */
+export interface AcquisitionProtest {
+  id: number;
+  filedAt: Date;
+  resolvedAt: Date | null;
+  resolution: string | null;
+  reason: string;
+}
+
+/**
+ * Complete representation returned by GET /requests/:id.
+ *
+ * The collection endpoints intentionally continue using AcquisitionRequest.
+ * Only the detail endpoint expands the request with workflow and award
+ * context required by the challenge.
+ *
+ * @openapi
+ */
+export interface AcquisitionRequestDetail extends AcquisitionRequest {
+  approvals: AcquisitionApproval[];
+  contract: AcquisitionContract | null;
+  protests: AcquisitionProtest[];
+}
+
+
+/**
  * Supported filters for acquisition-request searches.
  * Additional filtering can be added here without exposing arbitrary SQL
  * fields or expressions to callers.
@@ -32,7 +98,6 @@ export interface RequestFilters
 {
   status?: string;
   priority?: string;
-  fiscalYear?: number;
 }
 
 /**
@@ -190,13 +255,7 @@ export async function getRequests(
     conditions.push(`ar.priority = $${values.length}`);
   }
 
-  if (filters.fiscalYear !== undefined) {
-    values.push(filters.fiscalYear);
-    conditions.push(`ar.fiscal_year = $${values.length}`);
-  }
-
-  const where =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const result = await pool.query(
     `
@@ -224,20 +283,19 @@ export async function getRequests(
 
 
 /**
- * Returns a single acquisition request by its database ID.
+ * Loads the base API representation of one acquisition request.
  *
- * The query joins users so the API response includes requestorName in the same
- * shape used by the acquisition-request list endpoint.
+ * This shared loader keeps endpoints that need only the base request separate
+ * from GET /requests/:id, which enriches that base request with approvals,
+ * contract information, and protest context.
  *
- * The ID is passed as a PostgreSQL parameter rather than interpolated into the
- * SQL string.
- *
- * Returns null when no acquisition request exists with the supplied ID.
+ * The request ID is passed as a PostgreSQL parameter rather than interpolated
+ * into the SQL string.
  */
-export async function getRequestById(
+async function getBaseRequestById(
   id: number
 ): Promise<AcquisitionRequest | null> {
-  const result = await pool.query(
+  const result = await pool.query<AcquisitionRequest>(
     `
       SELECT
         ar.id,
@@ -251,21 +309,132 @@ export async function getRequestById(
         ar.fiscal_year AS "fiscalYear",
         ar.created_at AS "createdAt"
       FROM acquisition_requests ar
-
-      -- Join to users so the API does not need a second query to resolve
-      -- the human-readable requestor name.
       JOIN users u ON u.id = ar.requestor_id
-
-      -- The request ID remains parameterized to avoid constructing SQL from
-      -- caller-controlled input.
       WHERE ar.id = $1
     `,
     [id]
   );
 
-  // Absence is represented as null so the HTTP layer can convert it cleanly
-  // into a 404 response without exposing database-specific behavior.
-  return (result.rows[0] as AcquisitionRequest | undefined) ?? null;
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Returns a single acquisition request by its database ID together with the
+ * detail context required by the request-detail endpoint.
+ *
+ * The base request query joins users so the response includes requestorName.
+ * After confirming the request exists, the service also loads the ordered
+ * approval chain, associated contract when present, and protest context.
+ *
+ * All database IDs are passed as PostgreSQL parameters rather than
+ * interpolated into SQL strings.
+ *
+ * Returns null when no acquisition request exists with the supplied ID.
+ */
+export async function getRequestById(
+  id: number
+): Promise<AcquisitionRequestDetail | null> {
+  /*
+   * Load the base request first.
+   *
+   * Keeping this as the authoritative existence check lets us return null
+   * immediately without running the related-detail queries for an ID that
+   * does not exist.
+   */
+  const request = await getBaseRequestById(id);
+
+  if (!request) {
+    return null;
+  }
+
+  /*
+   * The request now definitely exists, so its independent related datasets
+   * can be retrieved concurrently.
+   *
+   * Every query remains parameterized. The request ID is always supplied as
+   * a PostgreSQL bind value ($1), never interpolated into SQL text.
+   */
+  const [
+    approvalsResult,
+    contractResult,
+    protestsResult
+  ] = await Promise.all([
+    pool.query<AcquisitionApproval>(
+      `
+        SELECT
+          a.id,
+          a.approver_id AS "approverId",
+          u.name AS "approverName",
+          a.stage_name AS "stageName",
+          a.stage_sequence AS "stageSequence",
+          a.decision,
+          a.decided_at AS "decidedAt",
+          a.notes
+        FROM approvals a
+        JOIN users u
+          ON u.id = a.approver_id
+        WHERE a.acquisition_request_id = $1
+        ORDER BY
+          a.stage_sequence ASC,
+          a.id ASC
+      `,
+      [id]
+    ),
+
+    pool.query<AcquisitionContract>(
+      `
+        SELECT
+          c.id,
+          c.vendor_id AS "vendorId",
+          v.name AS "vendorName",
+          c.award_date AS "awardDate",
+          c.contract_value AS "contractValue",
+          c.period_of_performance_end AS "periodOfPerformanceEnd",
+          c.status
+        FROM contracts c
+        JOIN vendors v
+          ON v.id = c.vendor_id
+        WHERE c.acquisition_request_id = $1
+        ORDER BY c.id ASC
+        LIMIT 1
+      `,
+      [id]
+    ),
+
+    pool.query<AcquisitionProtest>(
+      `
+        SELECT
+          p.id,
+          p.filed_at AS "filedAt",
+          p.resolved_at AS "resolvedAt",
+          p.resolution,
+          p.reason
+        FROM protests p
+        WHERE p.acquisition_request_id = $1
+        ORDER BY
+          p.filed_at ASC,
+          p.id ASC
+      `,
+      [id]
+    )
+  ]);
+
+  /*
+   * The detail contract is intentionally explicit:
+   *
+   * approvals -> [] when no approval records exist
+   * contract  -> null when no contract exists
+   * protests  -> [] when no protests exist
+   *
+   * This avoids omitted/undefined fields and gives the frontend a stable
+   * response shape.
+   */
+  return {
+    ...request,
+    approvals: approvalsResult.rows,
+    contract: contractResult.rows[0] ?? null,
+    protests: protestsResult.rows
+  };
 }
 
 /**
@@ -405,9 +574,10 @@ export async function getDashboard(): Promise<DashboardSummary> {
  * callers therefore serialize on the same authoritative row and cannot both
  * validate against stale workflow state.
  *
- * Moving from in_review to approved additionally requires every configured
- * approval assignment for the request to have an approved decision. A pending
- * or rejected approval prevents the request from becoming approved.
+ * Moving from in_review to approved additionally checks the current approval
+ * stage. Approvals sharing the same stage_sequence are parallel, so every
+ * approver in that current stage must have an approved decision before the
+ * workflow can advance.
  */
 export async function updateRequestStatus(
   id: number,
@@ -445,14 +615,42 @@ export async function updateRequestStatus(
       };
     }
 
+    /*
+     * A request may become approved only when the current approval stage is
+     * complete.
+     *
+     * stage_sequence defines approval-stage order. Multiple approval rows may
+     * share the same sequence, representing approvers who act in parallel.
+     *
+     * Example:
+     *
+     *   Stage 1: approver A = approved
+     *            approver B = pending
+     *   Stage 2: approver C = pending
+     *
+     * Stage 1 is the current stage because one of its parallel approvers is
+     * still pending. Stage 2 does not become relevant until Stage 1 completes.
+     *
+     * The current stage is therefore the lowest stage_sequence that still has
+     * an undecided or rejected approval. Only approvals belonging to that
+     * sequence participate in this advancement check.
+    */
     if (currentStatus === "in_review" && requestedStatus === "approved") {
       const approvalState = await client.query(
         `
+          WITH current_stage AS (
+            SELECT MIN(stage_sequence) AS stage_sequence
+            FROM approvals
+            WHERE acquisition_request_id = $1
+              AND decision <> 'approved'
+          )
           SELECT
-            COUNT(*) FILTER (WHERE decision = 'pending')::int AS "pendingCount",
-            COUNT(*) FILTER (WHERE decision = 'rejected')::int AS "rejectedCount"
-          FROM approvals
-          WHERE acquisition_request_id = $1
+            COUNT(*) FILTER (WHERE a.decision = 'pending')::int AS "pendingCount",
+            COUNT(*) FILTER (WHERE a.decision = 'rejected')::int AS "rejectedCount"
+          FROM approvals a
+          JOIN current_stage cs
+            ON cs.stage_sequence = a.stage_sequence
+          WHERE a.acquisition_request_id = $1
         `,
         [id]
       );
@@ -462,6 +660,7 @@ export async function updateRequestStatus(
 
       if (pendingCount > 0 || rejectedCount > 0) {
         await client.query("ROLLBACK");
+
         return {
           outcome: "approval_incomplete",
           pendingCount,
@@ -482,7 +681,7 @@ export async function updateRequestStatus(
 
     await client.query("COMMIT");
 
-    const request = await getRequestById(updated.rows[0].id as number);
+    const request = await getBaseRequestById(updated.rows[0].id as number);
 
     if (!request) {
       throw new Error("Updated acquisition request could not be reloaded.");
@@ -626,14 +825,15 @@ export async function searchRequestsByValidatedFilters(
     );
   }
 
-   /*
-    * The SQL structure itself is completely application-owned.
-    *
-    * If no filters are supplied, no WHERE clause is added. The AI service will decide whether an empty validated filter set is appropriate before calling this database function.
-   */
-   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  /*
+   * The SQL structure itself is completely application-owned.
+   *
+   * Empty filter arrays are rejected above, so every query reaching this point contains at least one validated filter.
+   * The WHERE clause is built only from server-owned field/operator mappings and PostgreSQL-parameterized values.
+  */
+  const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
-	const result = await pool.query<AcquisitionRequest>(
+  const result = await pool.query<AcquisitionRequest>(
 	  `
 		SELECT
 		  ar.id,
