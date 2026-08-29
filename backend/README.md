@@ -39,7 +39,9 @@ Application / service logic
 HTTP response
 ```
 
-`server.ts` remains focused on HTTP concerns. Acquisition workflow rules, persistence, dashboard queries, concurrency behavior, and AI interpretation are kept outside the route layer.
+`server.ts` is the application composition root, responsible for global middleware, mounting the category routers, centralized error handling, and application startup. 
+
+The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. Acquisition workflow logic, persistence behavior, dashboard queries, concurrency-sensitive status transitions, and AI interpretation remain behind service boundaries.
 
 PostgreSQL is the authoritative state store. The LLM is used only to interpret natural-language search requests into a structured filter. LLM output is treated as untrusted input, validated by the application, and translated into server-owned parameterized SQL. There is no direct LLM-to-database path.
 
@@ -55,9 +57,23 @@ backend/
 ├── seeds/
 │   └── 001_acquireiq_seed.sql
 ├── src/
+│   ├── db/
+│   ├── errors/
 │   ├── logging/
 │   │   └── logger.ts
+│   ├── routes/
+│   │   ├── api-router.ts
+│   │   ├── assist-router.ts
+│   │   ├── dashboard-router.ts
+│   │   └── request-router.ts
 │   ├── services/
+│   │   ├── ai/
+│   │   │   ├── openai-provider.ts
+│   │   │   ├── prompt.ts
+│   │   │   ├── provider.ts
+│   │   │   ├── service.ts
+│   │   │   └── types.ts
+│   │   └── requests.ts
 │   ├── schemas.generated.ts
 │   ├── server.ts
 │   └── swagger-spec.ts
@@ -67,7 +83,9 @@ backend/
 └── tsconfig.json
 ```
 
-The exact service/module filenames are implementation details and may be organized as needed while preserving the route → service/data-access separation.
+`server.ts` mounts the four endpoint-category routers directly. 
+
+The routers expose complete public endpoint paths, while acquisition, persistence, workflow, dashboard, and AI behavior remain behind service boundaries.
 
 ## PostgreSQL Model
 
@@ -84,7 +102,7 @@ protests
 
 Plain SQL is used rather than an ORM because the relational rules, constraints, indexes, and concurrency behavior are important parts of the application and should remain explicit.
 
-Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. A stage is complete only when the application determines that all approvals required at that stage have reached the necessary decision state.
+Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. A request advances toward approval only after every required approver in the current stage has approved. A pending or rejected decision in the current stage blocks approval, while later-stage approvals do not affect completion of the current stage.
 
 Status changes are business operations rather than arbitrary CRUD updates. Valid transitions are enforced by the application, and PostgreSQL transactions/concurrency controls protect the state used to make those decisions.
 
@@ -162,11 +180,11 @@ Detailed request/response schemas, parameters, and status codes are maintained i
 
 ## Concurrency Safety
 
-Status transitions are performed as concurrency-safe database operations. The transition decision and corresponding state update occur within the same PostgreSQL concurrency boundary so competing requests cannot both successfully advance from the same stale state.
+Status transitions are performed inside PostgreSQL transactions. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the corresponding update is performed, preventing competing callers from successfully advancing from the same stale request state.
 
-Parallel approval stages are evaluated from their individual approval records before a request is allowed to advance.
+Parallel approval stages are evaluated from their individual approval records before a request is allowed to advance. Every required approver in the current stage must have approved before the `in_review` → `approved` transition is permitted.
 
-The implementation and tests are the source of truth for the exact locking/conditional-update mechanics.
+The backend regression suite explicitly exercises competing transitions and verifies that exactly one competing transition succeeds with HTTP 200 while the stale competing transition is rejected with HTTP 422.
 
 ## AI-Assisted Search
 
@@ -201,6 +219,8 @@ The LLM does not generate executable SQL and has no database credentials.
 
 Malformed output, unsupported fields or values, and other invalid model responses are rejected or handled through the application's explicit fallback behavior before database access.
 
+The validated AI filter contract permits only the fields `status`, `priority`, `fiscalYear`, and `budgetCeiling` and the operators `eq`, `gt`, `gte`, `lt`, and `lte`. Field/operator combinations, domain values, numeric ranges, and confidence are validated deterministically before any database query is constructed. Empty filters, low-confidence interpretations, provider failures, and invalid provider output produce the explicit fallback response rather than an unrestricted database query.
+
 LLM credentials and provider configuration remain server-side.
 
 ## Configuration
@@ -210,11 +230,14 @@ Backend configuration is supplied through `.env`.
 Core settings include:
 
 ```env
+PORT=3002
 DATABASE_URL=postgresql://acquireiq_app:<password>@localhost:5432/acquireiq
+OPENAI_API_KEY=<reviewer-api-key>
+OPENAI_MODEL=gpt-5.4-mini
 LOG_LEVEL=none
 ```
 
-The implemented LLM provider adds its server-side API key/model configuration to the backend environment. Secrets must not be committed to source control.
+AcquireIQ uses OpenAI as its implemented LLM provider. `OPENAI_API_KEY` supplies the server-side provider credential and `OPENAI_MODEL` optionally selects the model, defaulting to `gpt-5.4-mini`. The API can start without an OpenAI key; an attempted AI interpretation without a usable provider configuration follows the application's explicit fallback path rather than preventing backend startup. Secrets must not be committed to source control.
 
 Supported logging levels are:
 
@@ -283,19 +306,22 @@ Schema generation runs before TypeScript compilation when required by the projec
 
 ## Testing
 
-Backend tests focus on behavior where correctness matters most:
+The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, parallel approval-stage behavior, concurrency-safe competing transitions, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
 
-- valid and invalid status transitions
-- parallel approval-stage behavior
-- competing/concurrent status transitions
-- request validation
-- database constraints and data-access behavior
-- dashboard aggregation
-- AI structured-filter validation
-- malformed/unsupported AI output and fallback behavior
-- API/database integration
+The concurrency regression verifies that two competing transitions against the same request produce exactly one HTTP 200 response and one HTTP 422 response, with the final persisted state reflecting the successful transition.
 
-Use the test command defined in `package.json` to run the backend test suite.
+The AI adversarial checks include SQL-like and unsupported model output and verify that the database remains intact after those requests.
+
+Final verified backend regression result:
+
+```text
+PASS: 98
+FAIL: 0
+TOTAL: 98
+ALL BACKEND REGRESSION TESTS PASSED.
+```
+
+The backend TypeScript/OpenAPI build also completes successfully, including generated OpenAPI schemas and final TypeScript compilation.
 
 ## Design Notes
 
@@ -318,3 +344,15 @@ The schema includes indexes aligned with actual application access patterns:
 - unresolved protests used by dashboard/workflow queries
 
 The database schema remains the source of truth for the exact index definitions.
+
+### Object-oriented design approach
+
+AcquireIQ uses object-oriented design selectively rather than applying classes to every backend component.
+
+TypeScript interfaces define contracts and domain/data shapes. Classes are used where object-oriented design provides a concrete benefit, such as encapsulated state, object identity, lifecycle behavior, specialized types, dependency injection, or interchangeable implementations behind a common interface.
+
+OOP is intentionally not used where those characteristics are absent. Stateless service and data-access operations are implemented as functions when introducing a class would provide no additional encapsulation, state management, polymorphism, or behavioral abstraction.
+
+For example, `ApiError` is appropriately modeled as a class because it extends the behavior and identity of JavaScript's `Error` type. An external AI provider can also benefit from an interface with interchangeable provider implementations. In contrast, a stateless operation such as retrieving acquisition requests does not require a `RequestService` instance merely to contain a method.
+
+This approach applies OOP principles such as abstraction, encapsulation, and polymorphism where they improve the design while favoring simpler functional modules where an object model would add ceremony without meaningful value.

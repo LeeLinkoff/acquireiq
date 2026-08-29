@@ -30,9 +30,9 @@ Tradeoff: this approach spends some time maintaining a clean baseline and explic
 
 The backend uses Node.js, Express, and TypeScript with `strict: true`.
 
-The API layer should remain thin. HTTP-specific concerns belong in route handlers, while acquisition rules, workflow decisions, persistence, and AI-provider behavior belong behind explicit service boundaries.
+TypeScript is used to define and enforce contracts across the backend, including request and response DTOs, approval records, workflow statuses and transitions, AI structured filters, service boundaries, and database results.
 
-Reasoning: AcquireIQ has several contracts where accidental shape drift would be costly, particularly request/response DTOs, approval records, status transitions, AI structured filters, and database results. TypeScript provides compile-time checking across those boundaries.
+Reasoning: AcquireIQ has several contracts where accidental shape drift would be costly. TypeScript provides compile-time checking across those boundaries and helps keep the implemented API, business logic, and generated OpenAPI schemas consistent.
 
 Tradeoff: TypeScript adds build and type-definition overhead compared with plain JavaScript, but that cost is justified by the number of explicit contracts in the application.
 
@@ -40,9 +40,9 @@ Tradeoff: TypeScript adds build and type-definition overhead compared with plain
 
 PostgreSQL is the authoritative source for acquisition requests, vendors, contracts, approvals, protests, and users.
 
-Application code will enforce business rules, but persistent invariants should also be protected by database constraints where practical.
+Application code enforces business rules, while persistent invariants are also protected by PostgreSQL constraints where practical.
 
-The schema should favor explicit relational modeling over storing workflow state in opaque JSON structures. The required domain entities have meaningful relationships and need to support filtering, joins, aggregation, and concurrency-safe updates.
+The schema uses explicit relational modeling rather than storing workflow state in opaque JSON structures.
 
 Reasoning: acquisition workflow state is transactional business data. PostgreSQL provides the relational constraints, transactions, locking behavior, and aggregation capabilities needed by the challenge without introducing additional infrastructure.
 
@@ -58,7 +58,7 @@ Reasoning: representing each approver as an independent row preserves who decide
 
 Tradeoff: determining whether a stage is complete requires querying the set of approvals for the current stage. That is preferable to duplicating aggregate approval state that could become inconsistent.
 
-The exact rejection behavior and final workflow transitions will be documented once implemented and verified.
+A request advances toward approval only after every required approver in the current stage has approved. A pending or rejected decision in the current stage blocks approval. Later-stage approvals do not affect completion of the current stage.
 
 ## Status transitions are a business rule, not arbitrary CRUD
 
@@ -76,7 +76,7 @@ Tradeoff: adding a new workflow state requires intentionally updating transition
 
 The challenge explicitly requires status updates to remain correct when two updates arrive at nearly the same time.
 
-The implementation will therefore make the transition check and the state update part of the same database transaction and use PostgreSQL concurrency control around the current request state.
+The transition check and state update execute within the same PostgreSQL transaction. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the transition is applied.
 
 The important invariant is that two callers must not both observe the same stale state and independently perform transitions that should have been mutually exclusive.
 
@@ -95,7 +95,7 @@ Only behavior consistent with the committed database state
 may be accepted.
 ```
 
-The final locking or conditional-update strategy will be recorded here after implementation rather than claiming a mechanism before it exists.
+This row-level locking strategy serializes competing transitions against the same acquisition request. After the first transaction commits, a waiting transaction re-evaluates the newly committed state rather than validating against stale state.
 
 Testing should deliberately create competing updates rather than relying only on sequential unit tests.
 
@@ -134,11 +134,11 @@ POST   /assist/query
 
 Reasoning: keeping aggregation and filtering close to the database reduces unnecessary data movement and makes the API contract reflect the questions the UI actually needs answered.
 
-The exact response envelopes, pagination decisions, and error shapes will be documented from the implemented API.
+The implemented API uses explicit request and response contracts, deterministic validation, and HTTP status codes that distinguish validation errors, missing resources, invalid workflow transitions, and server failures. Pagination is not included in the current challenge implementation.
 
 ## OpenAPI schemas: generated where practical
 
-The project baseline generates OpenAPI component schemas from exported TypeScript interfaces rather than maintaining a second handwritten copy of every response shape.
+AcquireIQ generates OpenAPI component schemas from exported TypeScript interfaces rather than maintaining a second handwritten copy of every response shape.
 
 Route metadata such as paths, methods, request bodies, and status codes remains explicitly documented.
 
@@ -152,7 +152,7 @@ The AI feature is deliberately narrow.
 
 The LLM receives natural language and returns a structured representation of the requested acquisition filters. It does not receive authority to construct or execute SQL.
 
-The intended trust boundary is:
+The implemented trust boundary is:
 
 ```text
 User natural language
@@ -182,19 +182,19 @@ This is also why a successful JSON parse is not sufficient validation. Fields an
 
 ## AI provider isolation
 
-LLM-provider-specific code should be isolated behind a small application boundary rather than embedded directly in `/assist/query`.
+LLM-provider-specific code is isolated behind a small application boundary rather than embedded directly in `/assist/query`.
 
-The route and query service should operate on an internal structured-filter contract. Provider-specific request formatting, response extraction, and provider errors belong in the provider integration.
+The route and query service operate on an internal structured-filter contract. Provider-specific request formatting, response extraction, and provider errors remain inside the provider integration.
 
 Reasoning: the acquisition search behavior should not depend on the details of one vendor's SDK or response envelope.
 
 Tradeoff: a provider abstraction introduces another interface in a small prototype. It is justified here because provider separation is directly relevant to reliability, testability, and the challenge requirements.
 
-The actual provider and configuration variables will be recorded after the integration is implemented.
+The implemented provider is OpenAI, configured through the backend-only `OPENAI_API_KEY` environment variable with optional `OPENAI_MODEL`, which defaults to `gpt-5.4-mini`.
 
 ## AI hallucination and malformed-output handling
 
-The AI response must be validated before it influences database access.
+AI responses are deterministically validated before they can influence database access.
 
 Examples of invalid output include:
 
@@ -209,9 +209,9 @@ Unexpected operator
 Out-of-range numeric value
 ```
 
-Invalid model output must not be silently converted into an unrestricted query.
+Invalid model output is never silently converted into an unrestricted query.
 
-The API should instead return an explicit fallback or low-confidence state that the frontend can show to the user.
+The API returns an explicit fallback or low-confidence state when provider output cannot be safely used, rather than allowing uncertain or invalid AI output to influence database access.
 
 Reasoning: a plausible-looking but incorrect acquisition result is more dangerous than an explicit statement that the system could not confidently interpret the request.
 
@@ -223,7 +223,7 @@ The React interface must distinguish a normal interpreted query from a low-confi
 
 Reasoning: hiding uncertainty would encourage users to treat probabilistic interpretation as deterministic search behavior.
 
-The exact presentation will be documented once the UI is implemented.
+The exact presentation will be reconciled with the final React implementation before submission.
 
 ## No direct LLM-to-database path
 
@@ -261,7 +261,7 @@ This boundary remains true even if the LLM provider changes.
 
 ## Dashboard aggregation belongs in PostgreSQL
 
-Dashboard metrics should be produced through database aggregation rather than by retrieving every acquisition request and reducing the data in Node.js.
+Dashboard metrics are produced through PostgreSQL aggregation rather than by retrieving every acquisition request and reducing the data in Node.js.
 
 Reasoning: PostgreSQL is designed to filter and aggregate relational data efficiently. It also avoids transferring rows the dashboard does not need.
 
@@ -293,19 +293,19 @@ The exact component breakdown will be documented as the interface is implemented
 
 ## Error handling
 
-Expected operational failures should be represented intentionally.
+Expected operational failures are represented intentionally by the backend.
 
 Examples include invalid request data, missing acquisition requests, invalid workflow transitions, concurrent update conflicts, database failures, LLM-provider failures, malformed model responses, and low-confidence AI interpretation.
 
 Reasoning: returning a generic `500` for every failure hides distinctions the frontend and reviewer need to understand.
 
-The final status-code and error-envelope decisions will be documented from the implemented endpoints.
+The implemented API distinguishes validation failures, missing resources, invalid workflow transitions, and unexpected server failures through explicit HTTP status codes and structured error responses.
 
-## Testing priorities
+## Testing priorities and verification
 
-Testing effort is weighted toward behavior whose failure could produce incorrect acquisition state or misleading AI results.
+Backend testing is weighted toward behavior whose failure could produce incorrect acquisition state or misleading AI results.
 
-Highest-priority areas are:
+The completed backend regression suite verifies the highest-risk areas, including:
 
 ```text
 Status-transition rules
@@ -330,12 +330,11 @@ Scope decisions therefore prioritize a narrow, complete, defensible vertical sli
 
 Authentication and production deployment are explicitly skippable challenge concerns and are not priorities for the core implementation.
 
-Stretch goals should only be attempted after the required behavior works end to end.
+Optional stretch work is deferred until after the employer challenge submission so the remaining effort stays focused on completing and verifying the required end-to-end implementation.
 
-Candidate stretch areas include:
+Post-submission development candidates include:
 
 ```text
-Concurrency test suite
 Protest resolution endpoint
 AI query evaluation set
 Pagination
@@ -360,7 +359,7 @@ The challenge does not require large-scale production architecture, so the proto
 
 At roughly 10x the prototype workload, likely areas to revisit include database indexing based on observed query plans, pagination for request listings, dashboard-query cost, connection-pool sizing, and external LLM latency/rate limits.
 
-The final Lead Design Note will identify one concrete 10x concern based on the implemented system and explain the first production change that should address it.
+The final Lead Design Note will select one concrete 10x concern from the implemented system and explain the first production change that should address it.
 
 ## Lead Design Note
 
@@ -380,6 +379,6 @@ This running document provides the implementation history from which that shorte
 
 This file distinguishes between decisions already made, behavior already implemented, and intended implementation.
 
-Statements about unfinished concurrency mechanisms, LLM-provider selection, UI behavior, database commands, or tests should be updated only after the corresponding implementation has been verified.
+Statements about implementation status should be updated only after the corresponding behavior has been verified, with frontend behavior remaining an implementation target until the React workflow is complete.
 
 The goal is for the repository documentation to describe the system that actually exists, not the system that was originally imagined.
