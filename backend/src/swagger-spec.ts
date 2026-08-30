@@ -364,17 +364,20 @@ const swaggerSpec = {
               }
             }
           },
-          "422": {
-            description:
-              "Requested transition violates the workflow state machine or approval requirements",
-            content: {
-              "application/json": {
-                schema: {
-                  $ref: "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
+		  "422": {
+			  description: "Requested transition violates the request status state machine.",
+			  content: {
+				"application/json": {
+				  schema: {
+					$ref: "#/components/schemas/ErrorResponse"
+				  },
+				  example: {
+					ok: false,
+					error: "Invalid status transition from draft to approved."
+				  }
+				}
+			  }
+		  },
           "500": {
             description: "Unexpected server error",
             content: {

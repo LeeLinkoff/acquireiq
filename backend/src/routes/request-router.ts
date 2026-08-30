@@ -19,8 +19,8 @@
  *
  *   services/requests.ts
  *     Contains acquisition-request business logic and database operations,
- *     including request retrieval, creation, workflow transitions, approval
- *     checks, transactions, and concurrency control.
+ *     including request retrieval, creation, workflow transitions,
+ *     transactions, and concurrency control.
  *
  * Routing relationship:
  *
@@ -97,7 +97,7 @@ const router = Router();
 
 // GET /requests
 //
-// Returns acquisition requests with optional status, priority, and fiscal-year filtering. 
+// Returns acquisition requests with optional status and priority filtering.
 // HTTP query parameters are validated here before being converted to the typed filter object accepted by the service layer.
 router.get(
   "/requests",
@@ -310,13 +310,6 @@ router.patch(
         throw new ApiError(
           422,
           `Invalid status transition from ${result.currentStatus} to ${result.requestedStatus}.`
-        );
-      }
-
-      if (result.outcome === "approval_incomplete") {
-        throw new ApiError(
-          422,
-          `Request cannot be approved while approvals remain incomplete or rejected. Pending: ${result.pendingCount}; rejected: ${result.rejectedCount}.`
         );
       }
 

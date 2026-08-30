@@ -41,6 +41,20 @@ export interface AcquisitionApproval {
   notes: string | null;
 }
 
+/*
+ * Client payload for recording an individual approver's decision.
+ *
+ * The approval row already determines the acquisition request, approver,
+ * stage, and stage sequence. The client may therefore change only the
+ * decision and optional notes associated with that specific approval.
+ *
+ * @openapi
+ */
+export interface UpdateAcquisitionApproval {
+  decision: "approved" | "rejected";
+  notes?: string | null;
+}
+
 /**
  * Contract associated with an awarded acquisition request.
  *
@@ -126,6 +140,14 @@ export interface UpdateAcquisitionRequestStatus {
 
 export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
 
+/*
+ * Describes every possible result of attempting to move an acquisition request
+ * through the workflow state machine.
+ *
+ * A transition either succeeds, fails because the request does not exist,
+ * or is rejected because the requested transition is not allowed by the
+ * AcquireIQ request status state machine.
+ */
 export type StatusTransitionResult =
   | { outcome: "updated"; request: AcquisitionRequest }
   | { outcome: "not_found" }
@@ -133,11 +155,6 @@ export type StatusTransitionResult =
       outcome: "invalid_transition";
       currentStatus: AcquisitionRequestStatus;
       requestedStatus: AcquisitionRequestStatus;
-    }
-  | {
-      outcome: "approval_incomplete";
-      pendingCount: number;
-      rejectedCount: number;
     };
 
 /**
@@ -196,8 +213,7 @@ export type StatusTransitionResult =
  *
  * This is a table-driven state machine rather than a switch/case state
  * machine. The transition table defines the legal workflow paths, while
- * updateRequestStatus() performs the transition and enforces additional
- * business rules such as approval requirements.
+ * updateRequestStatus() validates and applies the requested transition.
  */
 const VALID_STATUS_TRANSITIONS: Readonly<
   Record<AcquisitionRequestStatus, readonly AcquisitionRequestStatus[]>
@@ -574,10 +590,8 @@ export async function getDashboard(): Promise<DashboardSummary> {
  * callers therefore serialize on the same authoritative row and cannot both
  * validate against stale workflow state.
  *
- * Moving from in_review to approved additionally checks the current approval
- * stage. Approvals sharing the same stage_sequence are parallel, so every
- * approver in that current stage must have an approved decision before the
- * workflow can advance.
+ * The requested transition must be allowed by the AcquireIQ request status
+ * state machine.
  */
 export async function updateRequestStatus(
   id: number,
@@ -585,7 +599,8 @@ export async function updateRequestStatus(
 ): Promise<StatusTransitionResult> {
   const client = await pool.connect();
 
-  try {
+  try
+  {
     await client.query("BEGIN");
 
     const locked = await client.query(
@@ -615,59 +630,7 @@ export async function updateRequestStatus(
       };
     }
 
-    /*
-     * A request may become approved only when the current approval stage is
-     * complete.
-     *
-     * stage_sequence defines approval-stage order. Multiple approval rows may
-     * share the same sequence, representing approvers who act in parallel.
-     *
-     * Example:
-     *
-     *   Stage 1: approver A = approved
-     *            approver B = pending
-     *   Stage 2: approver C = pending
-     *
-     * Stage 1 is the current stage because one of its parallel approvers is
-     * still pending. Stage 2 does not become relevant until Stage 1 completes.
-     *
-     * The current stage is therefore the lowest stage_sequence that still has
-     * an undecided or rejected approval. Only approvals belonging to that
-     * sequence participate in this advancement check.
-    */
-    if (currentStatus === "in_review" && requestedStatus === "approved") {
-      const approvalState = await client.query(
-        `
-          WITH current_stage AS (
-            SELECT MIN(stage_sequence) AS stage_sequence
-            FROM approvals
-            WHERE acquisition_request_id = $1
-              AND decision <> 'approved'
-          )
-          SELECT
-            COUNT(*) FILTER (WHERE a.decision = 'pending')::int AS "pendingCount",
-            COUNT(*) FILTER (WHERE a.decision = 'rejected')::int AS "rejectedCount"
-          FROM approvals a
-          JOIN current_stage cs
-            ON cs.stage_sequence = a.stage_sequence
-          WHERE a.acquisition_request_id = $1
-        `,
-        [id]
-      );
 
-      const pendingCount = approvalState.rows[0].pendingCount as number;
-      const rejectedCount = approvalState.rows[0].rejectedCount as number;
-
-      if (pendingCount > 0 || rejectedCount > 0) {
-        await client.query("ROLLBACK");
-
-        return {
-          outcome: "approval_incomplete",
-          pendingCount,
-          rejectedCount
-        };
-      }
-    }
 
     const updated = await client.query(
       `

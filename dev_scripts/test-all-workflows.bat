@@ -79,9 +79,6 @@ rem approval/rejected/awarded fixture states.
 rem They do NOT mutate those records when the API is correct.
 rem ============================================================
 
-for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/1/status" -H "Content-Type: application/json" -d "{\"status\":\"approved\"}"') do set "CODE=%%H"
-call :CHECK "Pending approvals block approval" 422 "!CODE!"
-
 for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/6/status" -H "Content-Type: application/json" -d "{\"status\":\"submitted\"}"') do set "CODE=%%H"
 call :CHECK "Rejected request cannot be revived" 422 "!CODE!"
 
@@ -157,6 +154,68 @@ if errorlevel 1 (
 )
 
 :SEQUENTIAL_DONE
+
+rem ============================================================
+rem VALID REJECTION-PATH TESTS
+rem ============================================================
+
+echo.
+echo ============================================================
+echo Testing valid rejection paths
+echo ============================================================
+
+rem ------------------------------------------------------------
+rem submitted -> rejected
+rem ------------------------------------------------------------
+
+set "REJ_SUB_ID="
+set "REJ_SUB_TITLE=Workflow Reject Submitted %RANDOM%-%RANDOM%"
+
+for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X POST "%BASE%/requests" -H "Content-Type: application/json" -d "{\"title\":\"!REJ_SUB_TITLE!\",\"description\":\"Automated submitted-to-rejected workflow test.\",\"requestorId\":1,\"priority\":\"medium\",\"budgetCeiling\":\"1000.00\",\"fiscalYear\":2027}"') do set "CODE=%%H"
+call :CHECK "Create request for submitted rejection path" 201 "!CODE!"
+
+if "!CODE!"=="201" (
+    call :PARSE_ID "%TMP_BODY%" REJ_SUB_ID
+
+    if defined REJ_SUB_ID (
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_SUB_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"submitted\"}"') do set "CODE=%%H"
+        call :CHECK "Rejection path draft to submitted" 200 "!CODE!"
+
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_SUB_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"rejected\"}"') do set "CODE=%%H"
+        call :CHECK "Valid submitted to rejected" 200 "!CODE!"
+
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_SUB_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"submitted\"}"') do set "CODE=%%H"
+        call :CHECK "Rejected request is terminal" 422 "!CODE!"
+    )
+)
+
+rem ------------------------------------------------------------
+rem in_review -> rejected
+rem ------------------------------------------------------------
+
+set "REJ_REVIEW_ID="
+set "REJ_REVIEW_TITLE=Workflow Reject In Review %RANDOM%-%RANDOM%"
+
+for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X POST "%BASE%/requests" -H "Content-Type: application/json" -d "{\"title\":\"!REJ_REVIEW_TITLE!\",\"description\":\"Automated in-review-to-rejected workflow test.\",\"requestorId\":1,\"priority\":\"medium\",\"budgetCeiling\":\"1000.00\",\"fiscalYear\":2027}"') do set "CODE=%%H"
+call :CHECK "Create request for in_review rejection path" 201 "!CODE!"
+
+if "!CODE!"=="201" (
+    call :PARSE_ID "%TMP_BODY%" REJ_REVIEW_ID
+
+    if defined REJ_REVIEW_ID (
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_REVIEW_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"submitted\"}"') do set "CODE=%%H"
+        call :CHECK "In-review rejection path draft to submitted" 200 "!CODE!"
+
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_REVIEW_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"in_review\"}"') do set "CODE=%%H"
+        call :CHECK "In-review rejection path submitted to in_review" 200 "!CODE!"
+
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_REVIEW_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"rejected\"}"') do set "CODE=%%H"
+        call :CHECK "Valid in_review to rejected" 200 "!CODE!"
+
+        for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!REJ_REVIEW_ID!/status" -H "Content-Type: application/json" -d "{\"status\":\"approved\"}"') do set "CODE=%%H"
+        call :CHECK "Rejected request remains terminal" 422 "!CODE!"
+    )
+)
 
 rem ============================================================
 rem CREATE FRESH REQUEST FOR CONCURRENCY TEST
