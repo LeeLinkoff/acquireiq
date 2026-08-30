@@ -2,7 +2,8 @@ import React from 'react'
 import AppHeaderCard from './components/AppHeaderCard.jsx'
 import BackendHealthCard from './components/BackendHealthCard.jsx'
 import MainContentCard from './components/MainContentCard.jsx'
-import './App.css'
+import './styles/App.css'
+
 
 const APP = {
   title: 'AcquireIQ',

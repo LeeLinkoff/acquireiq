@@ -8,6 +8,7 @@
 
 import React from 'react'
 
+
 const STATUS_FILTERS = [
   { value: 'all', label: 'All' },
   { value: 'draft', label: 'Draft' },
@@ -18,7 +19,8 @@ const STATUS_FILTERS = [
   { value: 'rejected', label: 'Rejected' },
 ]
 
-export default function PipelineFilters({ selectedStatus, onStatusChange }) {
+export default function PipelineFilters({ selectedStatus, onStatusChange })
+{
   return (
     <div className="pipeline-filters" aria-label="Filter acquisition requests by status">
       {STATUS_FILTERS.map((filter) => (

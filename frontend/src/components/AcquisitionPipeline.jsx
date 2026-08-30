@@ -12,6 +12,8 @@ import { getRequests } from '../api/client.js'
 import ErrorMessage from './ErrorMessage.jsx'
 import RequestCard from './RequestCard.jsx'
 import PipelineFilters from './PipelineFilters.jsx'
+import '../styles/pipeline.css'
+
 
 export default function AcquisitionPipeline() 
 {
@@ -27,6 +29,8 @@ export default function AcquisitionPipeline()
   // immediately after this component mounts.
   const [loading, setLoading] = useState(true)
 
+  // Tracks the status currently selected by the user for filtering the pipeline.
+  // "all" displays every acquisition request regardless of workflow status.
   const [selectedStatus, setSelectedStatus] = useState('all')
 
   const loadRequests = useCallback(async () => {

@@ -7,7 +7,9 @@
 import React from 'react'
 import AcquisitionPipeline from './AcquisitionPipeline.jsx'
 
-export default function MainContentCard() {
+
+export default function MainContentCard()
+{
   return (
     <main className="app-card main-content-card">
       <AcquisitionPipeline />
