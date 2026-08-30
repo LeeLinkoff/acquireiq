@@ -7,13 +7,21 @@
  * changes which requests are displayed.
  */
 
-import React from 'react'
+import React, { useState } from 'react'
+import RequestDetail from './RequestDetail.jsx'
 
-export default function RequestCard({ request }) {
+
+export default function RequestCard({ request })
+{
   // budget_ceiling is returned by PostgreSQL as a numeric value represented
   // as a string, so convert it only for display formatting.
   const budget = Number(request.budgetCeiling)
 
+  // Each request card independently tracks whether its full detail is visible.
+  // The detail API call is therefore made only after the user chooses to open
+  // this request instead of loading full detail for every pipeline card.
+  const [showDetails, setShowDetails] = useState(false)
+  
   const formattedBudget = Number.isFinite(budget)
     ? budget.toLocaleString('en-US', {
         style: 'currency',
@@ -44,9 +52,18 @@ export default function RequestCard({ request }) {
         </div>
       </div>
 
-      <button type="button" className="btn-secondary">
-        View Details
-      </button>
+	  <button
+		  type="button"
+		  className="btn-secondary"
+		  onClick={() => setShowDetails((current) => !current)}
+		  aria-expanded={showDetails}
+		>
+		  {showDetails ? 'Hide Details' : 'View Details'}
+	  </button>
+
+	  {showDetails && (
+		  <RequestDetail requestId={request.id} />
+	  )}
     </article>
   )
 }
