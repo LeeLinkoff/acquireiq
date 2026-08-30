@@ -1,0 +1,107 @@
+/*
+ * Request detail presentation.
+ *
+ * These styles cover the expanded acquisition request view, including approval stages, parallel approvals, contracts, and protests.
+ */
+
+
+.request-detail {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.request-detail h4 {
+  margin: 18px 0 8px;
+  font-size: 14px;
+}
+
+.request-detail p {
+  margin: 0;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.request-related-records {
+  display: grid;
+  gap: 12px;
+}
+
+.request-related-record {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+}
+
+.request-related-record > div {
+  display: grid;
+  gap: 3px;
+}
+
+.approval-stages {
+  display: grid;
+  gap: 12px;
+}
+
+
+.approval-stage {
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+}
+
+.approval-stage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.approval-parallel {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.approval-list {
+  display: grid;
+  gap: 10px;
+}
+
+.approval-item {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.approval-item > div {
+  display: grid;
+  gap: 3px;
+}
+
+
+@media (max-width: 640px) {
+  .approval-stage-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .approval-item,
+  .request-related-record {
+    grid-template-columns: 1fr;
+  }
+}

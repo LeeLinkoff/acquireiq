@@ -1,0 +1,100 @@
+/*
+ * Acquisition pipeline presentation.
+ *
+ * These styles cover pipeline filtering, the request list, and the summary
+ * cards used to present acquisition requests before their detail is opened.
+ */
+
+
+.pipeline-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.pipeline-filter {
+  padding: 7px 11px;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pipeline-filter:hover {
+  background: #f3f4f6;
+}
+
+.pipeline-filter.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.pipeline-filter:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.25);
+  outline-offset: 2px;
+}
+
+
+.request-list {
+  display: grid;
+  gap: 12px;
+}
+
+.request-card {
+  padding: 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.request-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.request-card-heading h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.request-status {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.request-card-summary {
+  display: flex;
+  gap: 32px;
+  margin-bottom: 16px;
+}
+
+.request-card-summary > div {
+  display: grid;
+  gap: 3px;
+}
+
+.request-card-summary strong {
+  color: #111827;
+  text-transform: capitalize;
+}
+
+
+@media (max-width: 640px) {
+  .request-card-heading,
+  .request-card-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
