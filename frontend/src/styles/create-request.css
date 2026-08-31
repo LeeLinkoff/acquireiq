@@ -1,0 +1,75 @@
+/* Create Request form */
+
+.create-request {
+  width: 100%;
+  text-align: left;
+}
+
+.create-request > h3 {
+  margin-top: 4px;
+  margin-bottom: 24px;
+}
+
+.create-request-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+
+.create-request-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.create-request-form input,
+.create-request-form select,
+.create-request-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.create-request-form input:focus,
+.create-request-form select:focus,
+.create-request-form textarea:focus {
+  outline: none;
+  border-color: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.15);
+}
+
+.create-request-form textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+/* Title and description use the full form width. */
+.create-request-form label:nth-of-type(1),
+.create-request-form label:nth-of-type(2) {
+  grid-column: 1 / -1;
+}
+
+.create-request-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+@media (max-width: 700px) {
+  .create-request-form {
+    grid-template-columns: 1fr;
+  }
+
+  .create-request-form label {
+    grid-column: 1;
+  }
+}

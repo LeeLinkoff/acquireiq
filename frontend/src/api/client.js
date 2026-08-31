@@ -92,6 +92,18 @@ export function getRequests() {
 }
 
 /*
+ * Creates a new acquisition request from the values entered in the
+ * Create Request form.
+ */
+export function createRequest(requestData)
+{
+  return request('/requests', {
+    method: 'POST',
+    body: JSON.stringify(requestData),
+  })
+}
+
+/*
  * Retrieves the complete detail for one acquisition request.
  *
  * Unlike the pipeline list response, the detail response includes the
@@ -101,4 +113,42 @@ export function getRequests() {
  */
 export function getRequestById(id) {
   return request(`/requests/${id}`)
+}
+
+/*
+ * Requests a workflow status transition for one acquisition request.
+ *
+ * The frontend supplies only the desired next status. The backend owns the
+ * workflow state machine, approval requirements, and concurrency protection,
+ * so the client cannot directly overwrite or bypass workflow state.
+ *
+ * On success the API returns the updated acquisition request.
+ */
+export function updateRequestStatus(id, status)
+{
+  return request(`/requests/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
+}
+
+/*
+ * Retrieves the aggregated acquisition pipeline metrics displayed
+ * by the dashboard.
+ */
+export function getDashboard()
+{
+  return request('/dashboard')
+}
+
+/*
+ * Sends a natural-language acquisition query to the AI-assisted
+ * request search endpoint.
+ */
+export function queryAcquisitions(query)
+{
+  return request('/assist/query', {
+    method: 'POST',
+    body: JSON.stringify({ query }),
+  })
 }

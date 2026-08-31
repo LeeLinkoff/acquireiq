@@ -11,25 +11,53 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import { getRequestById } from '../api/client.js'
-import ErrorMessage from './ErrorMessage.jsx'
+import { getRequestById, updateRequestStatus } from '../api/client.js'
+import Message from './Message.jsx'
 import ApprovalStage from './ApprovalStage.jsx'
 import { logVerbose, logError } from '../logging/logger.js'
 import '../styles/request-detail.css'
 
 
-export default function RequestDetail({ requestId })
+/*
+ * Defines which workflow actions the UI should offer for each current status.
+ *
+ * This mirrors the backend workflow only for presentation purposes. 
+ * The backend remains authoritative and validates every requested transition,including approval requirements and concurrency protection.
+ *
+ * This configuration is defined outside RequestDetail because it is static.
+ * It is static because it does not depend on component props or state and therefore does not need to be recreated each time the component renders.
+ */
+const STATUS_TRANSITIONS = {
+  draft: ['submitted'],
+  submitted: ['in_review', 'rejected'],
+  in_review: ['approved', 'rejected'],
+  approved: ['awarded'],
+  awarded: [],
+  rejected: [],
+}
+
+export default function RequestDetail({ requestId, onRequestUpdated })
 {
   // null distinguishes a request that has not finished loading from a
   // successfully loaded detail object.
   const [request, setRequest] = useState(null)
 
-  // Preserve the actual API error so ErrorMessage can expose diagnostic
+  // Preserve the actual API error so Message can expose diagnostic
   // information without making technical details the primary UI message.
   const [error, setError] = useState(null)
 
   // A new detail request begins whenever the selected request ID changes.
   const [loading, setLoading] = useState(true)
+
+  // Tracks whether a workflow status transition is currently being submitted.
+  // This prevents the user from sending the same transition multiple times while
+  // the backend is validating and applying the requested workflow change.
+  const [updatingStatus, setUpdatingStatus] = useState(false)
+
+  // Stores a workflow-update failure separately from the request-loading error.
+  // This allows the existing request detail to remain visible when the backend
+  // rejects a transition, such as an invalid request-status transition.
+  const [statusError, setStatusError] = useState(null)
 
   useEffect(() => {
     // Prevent an older asynchronous request from updating this component after
@@ -77,6 +105,54 @@ export default function RequestDetail({ requestId })
     }
   }, [requestId])
 
+  /*
+   * Requests a workflow transition and replaces the currently displayed request
+   * with the updated record returned by the backend.
+   *
+   * Workflow validity remains entirely server-owned. If the backend rejects the
+   * transition, the existing request stays visible and the rejection is exposed
+   * separately through statusError.
+   */
+  async function handleStatusUpdate(nextStatus)
+  {
+    setUpdatingStatus(true)
+    setStatusError(null)
+  
+    try
+    {
+      const updatedRequest = await updateRequestStatus(requestId, nextStatus)
+
+      // Merge the updated base request fields into the existing detail object.
+      // The PATCH response does not include approvals, contract, or protests, so
+      // replacing the entire object would remove those already-loaded detail fields.
+      setRequest((currentRequest) => ({
+      ...currentRequest,
+      ...updatedRequest,
+      }))
+  
+	  // Notify the parent that this request changed so the pipeline summary can
+	  // synchronize its copy of the request with the successful backend update.
+	  if (onRequestUpdated) {
+	    onRequestUpdated(updatedRequest)
+	  }
+
+      logVerbose('Acquisition request status updated', {
+        requestId,
+        nextStatus,
+        result: updatedRequest,
+      })
+    }
+    catch (err)
+    {
+      setStatusError(err)
+      logError('Acquisition request status update failed', err)
+    }
+    finally
+    {
+      setUpdatingStatus(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="request-detail">
@@ -88,13 +164,14 @@ export default function RequestDetail({ requestId })
   if (error) {
     return (
       <div className="request-detail">
-        <ErrorMessage
-          message="The acquisition request details could not be loaded."
-          details={{
-            message: error.message,
-            status: error.status,
-            response: error.details,
-          }}
+        <Message type="error"
+				  message="The acquisition request details could not be loaded."
+				  details={{
+				  message: error.message,
+				  status: error.status,
+				  response: error.details,
+				  }}
+				 onClose={() => setError(null)}
         />
       </div>
     )
@@ -103,6 +180,10 @@ export default function RequestDetail({ requestId })
   if (!request) {
     return null
   }
+
+  // Determine which workflow actions should be displayed for the request's
+  // current status. Unknown statuses safely produce no available actions.
+  const availableTransitions = STATUS_TRANSITIONS[request.status] ?? []
 
   /*
    * Group approval records by stageSequence.
@@ -129,6 +210,53 @@ export default function RequestDetail({ requestId })
 
       <h4>Description</h4>
       <p>{request.description}</p>
+
+	  <h4>Workflow Actions</h4>
+
+	  {availableTransitions.length > 0 ? (
+		  <div className="request-workflow-actions">
+			<select
+			  className="request-workflow-select"
+			  value=""
+			  disabled={updatingStatus}
+			  onChange={(event) => {
+				const nextStatus = event.target.value
+
+				if (nextStatus) {
+				  handleStatusUpdate(nextStatus)
+				}
+			  }}
+			  aria-label="Select workflow action"
+			>
+			  <option value="">
+				{updatingStatus ? 'Updating...' : 'Select action...'}
+			  </option>
+
+			  {availableTransitions.map((nextStatus) => (
+				<option key={nextStatus} value={nextStatus}>
+				  {`Move to ${nextStatus
+					.replaceAll('_', ' ')
+					.replace(/\b\w/g, (letter) => letter.toUpperCase())}`}
+				</option>
+			  ))}
+			</select>
+		  </div>
+		) : (
+		  <p>No further workflow actions are available.</p>
+	  )}
+
+  
+	 {/* 
+	   * Display workflow update failures through the application's reusable error
+	   * modal rather than implementing modal behavior inside RequestDetail.
+	   */}
+	  {statusError && (
+	    <Message type="error"
+				 title="Status Update Blocked"
+				 message={statusError.details?.error ?? statusError.message}
+				 onClose={() => setStatusError(null)}
+	    />
+	  )}
 
       <h4>Approval Chain</h4>
 

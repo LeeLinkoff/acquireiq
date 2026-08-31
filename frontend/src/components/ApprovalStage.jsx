@@ -19,12 +19,13 @@ export default function ApprovalStage({ approvals })
     <div className="approval-stage">
       <div className="approval-stage-heading">
         <strong>
-          Stage {stage.stageSequence}: {stage.stageName}
+          Stage {stage.stageSequence} — {stage.stageName}
         </strong>
 
-        {approvals.length > 1 && (
-          <span className="approval-parallel">Parallel approvals</span>
-        )}
+        <div className="approval-stage-summary">
+           {approvals.length} {approvals.length === 1 ? 'approver' : 'approvers'}
+           {approvals.length > 1 && ' · Parallel approval'}
+        </div>
       </div>
 
       <div className="approval-list">

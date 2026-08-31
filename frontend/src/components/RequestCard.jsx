@@ -1,17 +1,13 @@
 /*
- * RequestCard renders the required summary information for one acquisition
- * request in the pipeline.
- *
- * Detail loading and status changes stay outside this component for now.
- * Keeping the summary focused makes it reusable when filtering or AI search
- * changes which requests are displayed.
- */
+ * RequestCard keeps the pipeline summary focused while delegating full request detail and workflow status updates to RequestDetail.
+ * Keeping the summary focused makes it reusable when filtering or AI-assisted search changes which requests are displayed.
+*/
 
 import React, { useState } from 'react'
 import RequestDetail from './RequestDetail.jsx'
 
 
-export default function RequestCard({ request })
+export default function RequestCard({ request, onRequestUpdated })
 {
   // budget_ceiling is returned by PostgreSQL as a numeric value represented
   // as a string, so convert it only for display formatting.
@@ -61,9 +57,7 @@ export default function RequestCard({ request })
 		  {showDetails ? 'Hide Details' : 'View Details'}
 	  </button>
 
-	  {showDetails && (
-		  <RequestDetail requestId={request.id} />
-	  )}
+	  {showDetails && ( <RequestDetail requestId={request.id} onRequestUpdated={onRequestUpdated} /> )}
     </article>
   )
 }

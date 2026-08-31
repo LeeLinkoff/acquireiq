@@ -120,16 +120,13 @@ export function logVerbose(message, details) {
 // Error logging
 // ---------------------------------------------------------------------------
 //
-// Errors are considered summary-level information and therefore appear when
-// the configured level is:
-//
+// Errors are considered summary-level information and therefore appear when the configured level is:
 //   summary
 //   verbose
 //
 // LOG_LEVEL=none suppresses them.
 //
-// This function is for diagnostic logging only. It does not replace the
-// application's user-facing ErrorMessage component or other UI error handling.
+// This function is for diagnostic logging only. It does not replace the application's user-facing Message component or other UI error handling.
 //
 // Example:
 //

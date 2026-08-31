@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { getHealth } from '../api/client.js'
-import ErrorMessage from './ErrorMessage.jsx'
+import Message from './Message.jsx'
 
 export default function BackendHealthCard() {
   const [health, setHealth] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showDetails, setShowDetails] = useState(false)
 
   const checkHealth = useCallback(async () => {
+
     setLoading(true)
     setError(null)
 
@@ -27,7 +29,7 @@ export default function BackendHealthCard() {
   }, [checkHealth])
 
   const healthy = Boolean(health?.ok)
-
+	
   return (
     <section className="app-card health-card" aria-labelledby="backend-health-title">
       <div className="card-heading-row">
@@ -36,9 +38,10 @@ export default function BackendHealthCard() {
           <h2 id="backend-health-title">Backend Health</h2>
         </div>
 
-        <button className="btn-secondary" type="button" onClick={checkHealth} disabled={loading}>
-          {loading ? 'Checking…' : 'Refresh'}
-        </button>
+		<div className="card-actions">
+		  <button type="button" className="btn-secondary" onClick={() => setShowDetails(true)} disabled={!health || loading}  >Details</button>
+		  <button type="button" className="btn-secondary" onClick={checkHealth} disabled={loading} >{loading ? 'Checking…' : 'Refresh'}</button>
+		</div>
       </div>
 
       {!loading && !error && (
@@ -52,22 +55,48 @@ export default function BackendHealthCard() {
       )}
 
       {error && (
-        <ErrorMessage
-          message="The backend health check failed."
-          details={{
-            message: error.message,
-            status: error.status,
-            response: error.details,
-          }}
-        />
+       <Message type="error"
+				message="The backend health check failed."
+				details={{message: error.message, status: error.status, response: error.details }}
+				onClose={() => setError(null)}
+		/>
       )}
+	  
+	  {showDetails && health && (
+		  <Message
+			type="info"
+			title="Backend Health Details"
+			message={
+			  <>
+				<p>
+				  <strong>Status:</strong>{' '}
+				  {health.ok ? 'Healthy' : 'Problem detected'}
+				</p>
 
-      {health && (
-        <details className="health-details">
-          <summary>Health response</summary>
-          <pre>{JSON.stringify(health, null, 2)}</pre>
-        </details>
-      )}
+				{health.service && (
+				  <p>
+					<strong>Service:</strong> {health.service}
+				  </p>
+				)}
+
+				{health.status && (
+				  <p>
+					<strong>Service Status:</strong> {health.status}
+				  </p>
+				)}
+
+				{health.timestamp && (
+				  <p>
+					<strong>Checked:</strong>{' '}
+					{new Date(health.timestamp).toLocaleString()}
+				  </p>
+				)}
+			  </>
+			}
+			onClose={() => setShowDetails(false)}
+		  />
+	  )}
+
     </section>
   )
 }
