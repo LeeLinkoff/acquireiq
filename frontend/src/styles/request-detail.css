@@ -42,17 +42,81 @@
   gap: 3px;
 }
 
+.request-workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.request-workflow-select {
+  min-width: 220px;
+  padding: 10px 36px 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background-color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+  color: #1e293b;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.request-workflow-select:hover {
+  border-color: #94a3b8;
+}
+
+.request-workflow-select:focus {
+  outline: none;
+  border-color: #64748b;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.15);
+}
+
+.request-workflow-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.request-detail {
+  width: 100%;
+  text-align: left;
+}
+
+.request-detail .app-eyebrow {
+  text-align: left;
+}
+
+.request-detail h4 {
+  margin-top: 20px;
+  margin-bottom: 6px;
+  text-align: left;
+}
+
+.request-detail p {
+  text-align: left;
+}
+
+.request-workflow-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
+.request-workflow-select {
+  width: 280px;
+  max-width: 100%;
+}
+
+
 .approval-stages {
   display: grid;
   gap: 12px;
 }
 
-
 .approval-stage {
-  padding: 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #f9fafb;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--surface-color);
 }
 
 .approval-stage-heading {
@@ -61,6 +125,13 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.approval-stage-summary {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .approval-parallel {
@@ -94,7 +165,8 @@
 }
 
 
-@media (max-width: 640px) {
+@media (max-width: 640px)
+{
   .approval-stage-heading {
     align-items: stretch;
     flex-direction: column;

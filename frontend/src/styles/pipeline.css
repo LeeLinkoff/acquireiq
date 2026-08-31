@@ -6,38 +6,194 @@
  */
 
 
+/*
+ * Presents AI-assisted search as a distinct control group within the
+ * acquisition request list.
+ */
+.ai-search-panel {
+  margin: 20px 0 24px;
+  padding: 18px 20px 20px;
+  border: 1px solid #dbe3ee;
+  border-radius: 10px;
+  background: #f8fafc;
+  text-align: left;
+}
+
+.ai-search-heading h3 {
+  margin: 4px 0 14px;
+}
+
+.ai-search-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ai-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.ai-search-input:focus {
+  outline: none;
+  border-color: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.15);
+}
+
+.ai-search-controls .btn-primary,
+.ai-search-controls .btn-secondary {
+  height: 40px;
+  padding: 0 18px;
+  white-space: nowrap;
+}
+
+/*
+ * Makes the AI interpretation state visibly distinct so fallback results
+ * cannot be mistaken for normal search results.
+ */
+.ai-search-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: 7px;
+  font-size: 0.85rem;
+}
+
+.ai-search-result strong {
+  white-space: nowrap;
+}
+
+.ai-search-result-confident {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.ai-search-result-fallback {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.ai-search-result span {
+  display: inline-block;
+}
+
+.ai-search-confidence {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+
 .pipeline-filters {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 20px;
+  align-items: flex-end;
+  gap: 16px;
+  margin: 20px 0;
 }
 
 .pipeline-filter {
-  padding: 7px 11px;
-  border: 1px solid #d1d5db;
-  border-radius: 999px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 190px;
+  text-align: left;
+}
+
+.pipeline-filter span {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.pipeline-filter select {
+  width: 100%;
+  padding: 10px 36px 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
   background: #ffffff;
-  color: #4b5563;
-  font-size: 12px;
+  color: #0f172a;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pipeline-filter select:focus {
+  outline: none;
+  border-color: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.15);
+}
+
+
+.request-table-container {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.request-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.request-table th,
+.request-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  vertical-align: middle;
+}
+
+.request-table th {
+  font-size: 0.8rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f8fafc;
 }
 
-.pipeline-filter:hover {
-  background: #f3f4f6;
+.request-table tbody tr:hover {
+  background: #f8fafc;
 }
 
-.pipeline-filter.is-active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  color: #1d4ed8;
+.request-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-.pipeline-filter:focus-visible {
-  outline: 3px solid rgba(37, 99, 235, 0.25);
-  outline-offset: 2px;
+.request-table td:last-child,
+.request-table th:last-child {
+  text-align: right;
 }
 
+.request-detail-modal {
+  width: min(1100px, 85vw);
+  min-width: 750px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.request-detail-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.request-detail-modal-header h3 {
+  margin: 0;
+}
 
 .request-list {
   display: grid;
@@ -96,5 +252,16 @@
   .request-card-summary {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 600px) {
+  .pipeline-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pipeline-filter {
+    width: 100%;
   }
 }
