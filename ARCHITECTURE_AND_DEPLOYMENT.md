@@ -151,7 +151,7 @@ protests
 
 The database is responsible for durable relational state and participates directly in correctness through transactions, constraints, and indexes.
 
-Parallel approvals are represented as separate approval records that may share the same `stage_sequence`. A request advances toward approval only after every required approver in the current stage has approved. A pending or rejected decision in the current stage blocks approval, while later-stage approvals do not affect completion of the current stage.
+Parallel approvals are represented as separate approval records that may share the same stage_sequence. This allows multiple approvers to be represented within the same approval stage and displayed together by the application. AcquireIQ does not infer approval-stage advancement rules from those records because the challenge does not fully define how approval decisions, mixed decisions, stage progression, and acquisition-request status relate to one another.
 
 Status transitions are not treated as arbitrary CRUD updates. The application owns the valid transition graph, while PostgreSQL transaction/concurrency mechanisms protect the state used to make the transition decision.
 
@@ -218,7 +218,7 @@ PostgreSQL
 
 Hallucinated fields, unsupported values, malformed output, and other out-of-schema responses are rejected before database access.
 
-The API exposes an explicit low-confidence or fallback condition when the interpretation cannot be trusted. The React UI will make that state visible as part of the completed frontend implementation.
+The API exposes an explicit low-confidence or fallback condition when the interpretation cannot be trusted. The React UI makes that state visibly distinct from a normal successful AI-assisted result.
 
 ## 1.7 Frontend architecture
 
@@ -228,7 +228,7 @@ The existing scaffold provides a centralized API client, reusable component stru
 
 AcquireIQ builds the acquisition-specific interface on that foundation.
 
-Primary user-facing areas are expected to include:
+Primary user-facing areas include:
 
 ```text
 Acquisition pipeline
@@ -278,7 +278,7 @@ AcquireIQ-specific behavior is new:
 
 - PostgreSQL acquisition model
 - acquisition request APIs
-- parallel approval workflow
+- parallel approval data modeling and read/display support
 - concurrency-safe status transitions
 - dashboard aggregation
 - AI structured-filter contract

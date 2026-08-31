@@ -1,121 +1,359 @@
 # Design Considerations
 
-Running log of engineering decisions made while building AcquireIQ, why those decisions were made, and what they trade off. This document is intended to evolve with the implementation rather than be reconstructed after the fact.
+## 1. Approach
 
-## Build approach: baseline first, incrementally
+AcquireIQ was implemented as a deliberately focused solution to the Full-Stack Engineering Lead Challenge. The goal was to implement the required behavior with a small, understandable architecture rather than expand the exercise with unnecessary frameworks, abstractions, or optional features.
 
-AcquireIQ is being built from a previously proven React, Node/Express, and TypeScript project skeleton rather than starting with an empty repository.
+The implementation uses React for the frontend, Node.js with TypeScript and Express for the API, PostgreSQL for persistence and transactional concurrency control, and an LLM provider for natural-language acquisition search.
 
-The baseline already provides a working frontend/backend development loop, health endpoint, Swagger/OpenAPI support, centralized logging, TypeScript strict mode, CI infrastructure, and a service-oriented backend structure. The acquisition-specific behavior is then added incrementally on top of that verified foundation.
+The challenge clearly intends to evaluate production-oriented engineering judgment, including data integrity, concurrency safety, parallel approvals, status advancement, and AI reliability. However, the supplied requirements fall short of defining the complete acquisition workflow needed to implement all of those behaviors coherently.
 
-The implementation order is intentionally risk-driven:
+That gap became apparent when the individually specified requirements were integrated and exercised together through the application, exposing the most significant design issue in the exercise: individually understandable requirements do not necessarily define a complete or coherent workflow when combined.
 
-1. Preserve and verify the frontend/backend baseline.
-2. Replace generic template behavior with the AcquireIQ domain.
-3. Establish the PostgreSQL schema, migrations, constraints, seed data, and indexes.
-4. Implement read APIs and dashboard aggregation.
-5. Implement acquisition creation and status transitions.
-6. Implement parallel approval workflow and concurrency protection.
-7. Add the AI query path behind a provider abstraction.
-8. Validate AI-generated structured filters before database access.
-9. Build the React workflow and AI-search experience against the real API.
-10. Add focused tests around the highest-risk behavior.
-11. Complete the Lead Design Note and final documentation from the actual implementation.
+---
 
-Reasoning: the challenge has several independent correctness boundaries. Building them incrementally makes failures easier to isolate and keeps infrastructure, persistence, workflow, AI, and UI problems from being debugged simultaneously.
+## 2. The Most Important Thing I Would Change: Validate the Workflow Before Production Implementation
 
-Tradeoff: this approach spends some time maintaining a clean baseline and explicit boundaries instead of immediately producing visible features. The benefit is lower integration risk and a codebase whose behavior is easier to explain and defend.
+The biggest change I would make if beginning this project again would happen **before writing production code**.
 
-## Backend language: TypeScript
+I would first validate the complete acquisition workflow with contracting officers, acquisition-domain subject-matter experts, end users, and product stakeholders. I would then build a rapid workflow prototype and have those users exercise the complete process before treating the workflow rules as sufficiently defined for implementation.
 
-The backend uses Node.js, Express, and TypeScript with `strict: true`.
+This is particularly important for AcquireIQ because concepts such as request `status`, approval stage, approval decision, rejection, and advancement represent business rules rather than implementation details. An engineer can make a technically reasonable assumption about any of them and still implement the wrong acquisition process.
 
-TypeScript is used to define and enforce contracts across the backend, including request and response DTOs, approval records, workflow statuses and transitions, AI structured filters, service boundaries, and database results.
+In a normal production engagement, I would expect substantial interaction with users and SMEs before these rules were finalized. I would walk through concrete scenarios such as:
 
-Reasoning: AcquireIQ has several contracts where accidental shape drift would be costly. TypeScript provides compile-time checking across those boundaries and helps keep the implemented API, business logic, and generated OpenAPI schemas consistent.
+- What happens when a request enters the approval process?
+- Who records an approver's decision?
+- Can several approvers act simultaneously?
+- What exactly constitutes completion of an approval stage?
+- What happens when one approver rejects and another approves?
+- What causes the request to move to another approval stage?
+- What causes the request's overall status to change?
+- Does completing an approval stage automatically change request status, or does it merely allow a contracting officer to change it?
+- What should the contracting officer see and be allowed to do at each point in that workflow?
 
-Tradeoff: TypeScript adds build and type-definition overhead compared with plain JavaScript, but that cost is justified by the number of explicit contracts in the application.
+I would put a lightweight prototype in front of those users as early as possible. Asking someone to describe a workflow and asking that same person to use a prototype are often very different forms of requirements validation. The latter frequently exposes assumptions and edge cases that are difficult to discover from written requirements alone.
 
-## PostgreSQL as the authoritative state store
+The challenge format does not provide those feedback mechanisms. There is no ongoing access to end users or acquisition SMEs with whom workflow assumptions can be validated, and there is no iterative prototype-review cycle in which behavior can be demonstrated and corrected before implementation continues.
 
-PostgreSQL is the authoritative source for acquisition requests, vendors, contracts, approvals, protests, and users.
+That limitation became important during development of AcquireIQ.
 
-Application code enforces business rules, while persistent invariants are also protected by PostgreSQL constraints where practical.
+---
 
-The schema uses explicit relational modeling rather than storing workflow state in opaque JSON structures.
+## 3. Workflow Ambiguity Discovered During End-to-End UI Validation
 
-Reasoning: acquisition workflow state is transactional business data. PostgreSQL provides the relational constraints, transactions, locking behavior, and aggregation capabilities needed by the challenge without introducing additional infrastructure.
+The most significant requirements ambiguity was not apparent to me during my initial reading of the challenge. It became apparent after implementing the API and UI and then exercising the application end to end as an actual user.
 
-Tradeoff: a normalized relational model requires more joins than a denormalized document model, but it makes relationships and workflow invariants substantially clearer.
+During the initial implementation, I attempted to fill in unspecified workflow details with reasonable assumptions so that the written requirements could be translated into a functioning application. Once I exercised the complete workflow through the UI, it became clear that some of those missing details were not implementation choices that should be inferred by the developer. They were unresolved business rules.
 
-## Parallel approval modeling
+The challenge states that more than one approver may be assigned to the same `stage_sequence` and that:
 
-Parallel approval is modeled using individual approval records. Multiple approvers can share the same `stage_sequence`, which means they belong to the same logical approval stage.
+> a request advances to the next stage once every approver at the current stage has recorded a decision.
 
-A request does not advance merely because one approval at the current sequence has completed. Every approval assigned to the current `stage_sequence` must reach the required decision state before the workflow can advance.
+The challenge separately requires a contracting officer to advance a request's `status`, requires the operation to write through `PATCH /requests/:id/status`, and requires the UI to reflect the resulting status change.
 
-Reasoning: representing each approver as an independent row preserves who decided what and allows the application to determine stage completion with a database query rather than encoding a list of approvers inside one mutable field.
+Those requirements establish two important concepts:
 
-Tradeoff: determining whether a stage is complete requires querying the set of approvals for the current stage. That is preferable to duplicating aggregate approval state that could become inconsistent.
+1. Approval-stage progression based on `stage_sequence` and recorded approval decisions.
+2. Request-status progression through a concurrency-safe status-update operation.
 
-A request advances toward approval only after every required approver in the current stage has approved. A pending or rejected decision in the current stage blocks approval. Later-stage approvals do not affect completion of the current stage.
+What the requirements do **not** define is the relationship between them.
 
-## Status transitions are a business rule, not arbitrary CRUD
+Once the workflow was exercised through the UI, several questions became unavoidable:
 
-`PATCH /requests/:id/status` is not treated as a generic update endpoint.
+- How does an approval `stage_sequence` correspond to an acquisition request `status`?
+- Which request-status transition, if any, represents advancement from one approval stage to another?
+- How is an approver's decision recorded when the required API contract does not specify an approval-decision write operation?
+- Does completion of an approval stage automatically advance something, or does it only permit a contracting officer to advance the request?
+- If the contracting officer controls request-status advancement, what exactly triggers approval-stage advancement?
+- What effect does a rejecting approval decision have when the stated stage-completion rule only requires every approver to have "recorded a decision"?
+- Is a stage containing both an `approved` and a `rejected` decision considered complete, blocked, or rejected?
+- If approval progression and request-status progression are intentionally separate concepts, how should their relationship be represented to the user?
 
-The server owns the set of valid state transitions. A client may request a transition, but it cannot directly overwrite workflow state or skip required stages.
+Had these issues been apparent during my initial requirements review, I would have raised them for clarification before implementation.
 
-Invalid jumps must be rejected. Rejected requests must not be silently revived through an arbitrary status update.
+They became obvious when I stopped evaluating the individual requirements independently and instead exercised the completed workflow in real time from the contracting officer's perspective. At that point, continuing to fill in the blanks would have meant inventing consequential acquisition business rules.
 
-Reasoning: the current status is part of the acquisition workflow, not merely editable display data. Centralizing transition rules gives every caller the same behavior and makes the rules testable.
+I deliberately chose not to do that.
 
-Tradeoff: adding a new workflow state requires intentionally updating transition logic rather than simply accepting a new string. That additional friction is desirable for workflow-critical state.
+---
 
-## Concurrency-safe workflow transitions
+## 4. Deliberate Scope Decision
 
-The challenge explicitly requires status updates to remain correct when two updates arrive at nearly the same time.
+AcquireIQ therefore distinguishes between behavior explicitly defined by the challenge and workflow behavior that would require additional domain clarification.
 
-The transition check and state update execute within the same PostgreSQL transaction. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the transition is applied.
+The application implements the required request-status workflow through `PATCH /requests/:id/status`. Request status follows a fixed transition graph, invalid jumps are rejected, terminal states cannot be revived, and the operation is protected against concurrent writes.
 
-The important invariant is that two callers must not both observe the same stale state and independently perform transitions that should have been mutually exclusive.
+AcquireIQ also models the required approval structure. Multiple approvers can belong to the same `stage_sequence`, approval stages and parallel groupings can be represented, and approval decisions can be persisted and displayed as part of request detail.
 
-A representative race is:
+What AcquireIQ deliberately does **not** do is invent a relationship between approval-stage progression and request-status progression that the challenge does not specify.
+
+In particular, the implementation does not assume an undocumented mapping such as:
 
 ```text
-Request currently in state A
-
-Caller 1 reads A
-Caller 2 reads A
-
-Caller 1 attempts A -> B
-Caller 2 attempts A -> B
-
-Only behavior consistent with the committed database state
-may be accepted.
+stage_sequence 1 = submitted
+stage_sequence 2 = in_review
+stage_sequence 3 = approved
 ```
 
-This row-level locking strategy serializes competing transitions against the same acquisition request. After the first transaction commits, a waiting transaction re-evaluates the newly committed state rather than validating against stale state.
+It also does not introduce an additional approval-decision API contract solely to fill the gap in the supplied requirements.
 
-Testing should deliberately create competing updates rather than relying only on sequential unit tests.
+This is intentional.
 
-## Recovery options considered
+Given access to the appropriate stakeholders, I would resolve the approval lifecycle first, validate it through a prototype, and then implement the resulting contract. In the absence of that clarification, I prefer an explicitly documented limitation over silently encoding an invented business rule.
 
-Kafka with a dead-letter queue was considered as an option for handling failed work and recovery.
+---
 
-I decided not to use it for this version of AcquireIQ because PostgreSQL already holds the authoritative state of the acquisition workflow. If something fails, the application can determine what successfully completed and what state the request is actually in, then recover or retry from that known state.
+## 5. Request Status State Machine
 
-Adding Kafka would introduce another system that has to be configured, operated, monitored, and kept consistent with the database. AcquireIQ does not currently have a requirement that justifies that additional complexity.
+The challenge requires a fixed set of valid request-status transitions but does not enumerate the statuses or provide the transition graph.
 
-Kafka and a dead-letter queue would become more attractive if AcquireIQ grew into a system with large amounts of asynchronous work, several independent systems consuming the same events, or a need to replay events later.
+AcquireIQ therefore defines the following request-level state machine as an explicit application design decision:
 
-Reasoning: recovery does not automatically require a message broker. The recovery mechanism should fit the way the application actually works. For the current system, PostgreSQL already provides the durable state needed to recover safely.
+```text
+                         ┌──────────┐
+                         │  draft   │
+                         └────┬─────┘
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │  submitted  │
+                       └──────┬──────┘
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │  in_review  │
+                       └──────┬──────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+                    ▼                   ▼
+              ┌──────────┐        ┌──────────┐
+              │ approved │        │ rejected │
+              └────┬─────┘        └──────────┘
+                   │                 TERMINAL
+                   ▼
+              ┌──────────┐
+              │ awarded  │
+              └──────────┘
+                TERMINAL
 
-Tradeoff: this keeps the architecture simpler, but it does not provide Kafka's event-streaming and replay capabilities. If those capabilities become useful as AcquireIQ grows, Kafka remains a deliberate future option rather than a technology that was simply overlooked.
+submitted ───────────────────────► rejected
+```
 
-## API contract
+The valid transitions are:
 
-Required acquisition endpoints are:
+```text
+draft       -> submitted
+submitted   -> in_review
+submitted   -> rejected
+in_review   -> approved
+in_review   -> rejected
+approved    -> awarded
+```
+
+`awarded` and `rejected` are terminal states.
+
+The important distinction is that this is the **request-status state machine**. It should not be interpreted as an undocumented mapping to approval `stage_sequence` values.
+
+---
+
+## 6. Server-Owned Request-Status Rules
+
+Request-status transition validity is enforced by the backend rather than trusted to the frontend.
+
+The UI can present only valid next-status options for usability, but that is not the security or integrity boundary. A caller can bypass the React application and invoke the API directly.
+
+For that reason, the API independently validates every requested status transition against the server-owned transition map.
+
+This provides two benefits:
+
+1. All clients receive the same request-status behavior.
+2. Invalid transitions cannot be introduced simply by bypassing or modifying the frontend.
+
+The frontend's transition information exists to improve the user experience. The backend remains authoritative.
+
+---
+
+## 7. Request-Status Validation and Concurrency
+
+The challenge requires `PATCH /requests/:id/status` to enforce fixed valid status transitions, reject invalid jumps, and remain correct when multiple callers attempt to update the same request concurrently.
+
+AcquireIQ meets these requirements by separating three responsibilities: PostgreSQL protects the valid status-value domain, the API/service enforces the request-status transition rules, and PostgreSQL row locking ensures those rules are evaluated against the authoritative current status during concurrent updates.
+
+### Valid Status Values
+
+PostgreSQL defines a `CHECK` constraint on `acquisition_requests.status`.
+
+The constraint prevents an undefined status value from being persisted. For example, `draft`, `submitted`, and `awarded` are valid stored values, while an undefined value such as `cancelled` would be rejected by the database.
+
+This protects the status-value domain, but it does not determine whether a transition between two valid statuses is allowed.
+
+For example, both `draft` and `awarded` are valid database values, but `draft -> awarded` is not a valid AcquireIQ transition.
+
+### Fixed Valid Transitions
+
+The API/service owns the fixed request-status state machine required by the challenge.
+
+After obtaining the current request status, it checks the requested next status against the allowed transitions.
+
+For example:
+
+```text
+draft -> submitted       VALID
+draft -> awarded         INVALID
+submitted -> in_review   VALID
+submitted -> rejected    VALID
+```
+
+An invalid jump is rejected with HTTP `422` and the request status is not changed.
+
+This directly satisfies the requirement for fixed valid transitions and rejection of invalid jumps.
+
+### Concurrency-Safe Status Updates
+
+The challenge also requires the status update to be concurrency-safe.
+
+AcquireIQ satisfies this by performing the read, transition validation, and update within a PostgreSQL transaction while locking the acquisition-request row with `SELECT ... FOR UPDATE`.
+
+The important point is that `SELECT ... FOR UPDATE` does not determine whether a transition is valid. The API/service still makes that decision. The row lock ensures that the API/service makes that decision using the current authoritative status rather than a stale status read by two callers at the same time.
+
+The operation executes in this order:
+
+```text
+PATCH /requests/:id/status
+          |
+          v
+        BEGIN
+          |
+          v
+SELECT request row
+   FOR UPDATE
+          |
+          v
+Read authoritative
+ current status
+          |
+          v
+API/service validates
+ requested transition
+          |
+      +---+---+
+      |       |
+   invalid   valid
+      |       |
+      v       v
+  ROLLBACK   UPDATE
+              |
+              v
+            COMMIT
+```
+
+### Clear Concurrency Example
+
+Assume acquisition request `42` currently has this status:
+
+```text
+Request 42
+status = draft
+```
+
+Two users click **Submit** at almost exactly the same time.
+
+Both API requests therefore ask AcquireIQ to change the same request to `submitted`:
+
+```text
+Request A: PATCH /requests/42/status -> submitted
+Request B: PATCH /requests/42/status -> submitted
+```
+
+Without concurrency protection, both callers could read `draft` before either update completes. The API/service could therefore independently evaluate the same transition twice:
+
+```text
+Request A sees: draft -> submitted = VALID
+Request B sees: draft -> submitted = VALID
+```
+
+AcquireIQ prevents that race by locking the request row before reading and validating its status.
+
+The actual sequence becomes:
+
+```text
+Request A                         Request B
+    |                                 |
+    v                                 v
+BEGIN                             BEGIN
+    |                                 |
+    v                                 v
+SELECT ... FOR UPDATE            SELECT ... FOR UPDATE
+    |                                 |
+    v                                 |
+LOCK ACQUIRED                        WAITS
+    |                                 |
+    v                                 |
+Reads status = draft                  |
+    |                                 |
+    v                                 |
+API/service checks                    |
+draft -> submitted                    |
+    |                                 |
+    v                                 |
+VALID                                 |
+    |                                 |
+    v                                 |
+UPDATE status = submitted             |
+    |                                 |
+    v                                 |
+COMMIT                                |
+                                      |
+                                      v
+                                LOCK ACQUIRED
+                                      |
+                                      v
+                                Reads status = submitted
+                                      |
+                                      v
+                                API/service checks
+                                submitted -> submitted
+                                      |
+                                      v
+                                INVALID
+                                      |
+                                      v
+                                ROLLBACK / HTTP 422
+```
+
+Request A succeeds because `draft -> submitted` is a valid transition.
+
+Request B cannot continue using the old `draft` value. It waits for Request A to commit, acquires the row lock, and then reads the newly committed value of `submitted`.
+
+The API/service therefore evaluates Request B as:
+
+```text
+submitted -> submitted
+```
+
+That transition is not in the AcquireIQ state machine, so Request B is rejected with HTTP `422`.
+
+This is how the implementation satisfies the concurrency requirement: competing status updates cannot independently validate themselves against the same stale request state.
+
+### Requirement-to-Implementation Summary
+
+| Requirement | AcquireIQ implementation |
+| --- | --- |
+| Persist only defined status values | PostgreSQL `CHECK` constraint |
+| Enforce fixed valid transitions | API/service request-status state machine |
+| Reject invalid jumps | API/service returns HTTP `422` without changing the request |
+| Make status updates concurrency-safe | PostgreSQL transaction with `SELECT ... FOR UPDATE` |
+| Prevent validation against stale status | Competing caller waits for the row lock and then reads the newly committed status |
+| Keep validation and update together | Row remains locked through transition validation and `UPDATE` until `COMMIT` |
+
+
+---
+
+## 8. API Contract
+
+The API is intentionally small and centered on the operations required by the challenge:
 
 ```text
 GET    /requests
@@ -126,259 +364,166 @@ GET    /dashboard
 POST   /assist/query
 ```
 
-`GET /requests` supports filtering by status and priority.
+The API avoids exposing persistence details directly to clients. Request validation, workflow validation, AI-output validation, and database operations remain server responsibilities.
 
-`GET /requests/:id` returns the acquisition detail together with its approval chain and associated contract information.
+I intentionally did not add endpoints merely because additional operations could be imagined from the data model. An API should represent an understood business capability, not simply provide CRUD operations for every table.
 
-`GET /dashboard` performs real database aggregation rather than loading the complete request set and calculating dashboard values in application memory.
+This is particularly relevant to approvals. Adding something such as an approval-decision endpoint without first resolving the approval lifecycle would make the API appear more complete while actually embedding an undefined business contract.
 
-Reasoning: keeping aggregation and filtering close to the database reduces unnecessary data movement and makes the API contract reflect the questions the UI actually needs answered.
+With more time, the API contract change I would make would be to add an explicit operation for the approval lifecycle once that lifecycle had been clarified with contracting officers and acquisition SMEs. I would not define that endpoint or its transition semantics from the current requirements because doing so would require guessing the unresolved relationship among approval decisions, approval-stage progression, rejection, and request-status progression. Once those business rules were established, I would represent the resulting approval operation explicitly in the API rather than forcing that behavior through the request-status endpoint.
 
-The implemented API uses explicit request and response contracts, deterministic validation, and HTTP status codes that distinguish validation errors, missing resources, invalid workflow transitions, and server failures. Pagination is not included in the current challenge implementation.
+---
 
-## OpenAPI schemas: generated where practical
+## 9. User Identity
 
-AcquireIQ generates OpenAPI component schemas from exported TypeScript interfaces rather than maintaining a second handwritten copy of every response shape.
+The challenge explicitly states that authentication is not required and permits a user ID to be passed as a query parameter.
 
-Route metadata such as paths, methods, request bodies, and status codes remains explicitly documented.
-
-Reasoning: generated schemas reduce drift between TypeScript contracts and API documentation while avoiding a framework rewrite solely for fully generated OpenAPI.
-
-Tradeoff: generation adds a build step and still leaves route-level documentation to maintain. It solves schema-shape drift without pretending that the entire HTTP contract can be inferred automatically from the current Express structure.
-
-## AI-assisted search: interpretation, not authority
-
-The AI feature is deliberately narrow.
-
-The LLM receives natural language and returns a structured representation of the requested acquisition filters. It does not receive authority to construct or execute SQL.
-
-The implemented trust boundary is:
+AcquireIQ uses the query-string approach:
 
 ```text
-User natural language
-        |
-        v
-LLM provider
-        |
-        v
-Untrusted structured filter
-        |
-        v
-Application schema/domain validation
-        |
-        v
-Validated internal filter
-        |
-        v
-Server-owned parameterized query
-        |
-        v
-PostgreSQL
+/acquireiq/?user=3
 ```
 
-Reasoning: model output can be malformed, hallucinated, unsupported, or simply wrong. Treating it as untrusted input keeps probabilistic interpretation separate from deterministic application behavior.
+The frontend reads the `user` value and retains it as application-level UI state representing the current user.
 
-This is also why a successful JSON parse is not sufficient validation. Fields and values must be checked against the application's supported filter contract.
+No additional behavior is assigned to this value because the challenge does not specify what application behavior should depend on the supplied user ID. In particular, AcquireIQ does not infer request ownership, approval authority, authorization, data visibility, or status-transition permissions from requirements that do not define those relationships.
 
-## AI provider isolation
+The user ID is not propagated through the backend merely to create behavior for an otherwise unspecified identity contract.
 
-LLM-provider-specific code is isolated behind a small application boundary rather than embedded directly in `/assist/query`.
+This is intentionally a challenge-level implementation. An application-wide hardcoded user ID would not represent a meaningful production identity model for a multi-user application, while a query-string user ID is sufficient to represent the challenge's explicitly permitted simplified user context without pretending that it provides authentication.
 
-The route and query service operate on an internal structured-filter contract. Provider-specific request formatting, response extraction, and provider errors remain inside the provider integration.
+In a production system, identity would require an explicitly defined contract covering the identity source, its relationship to application users and roles, and the operations those identities are permitted to perform. I would establish those requirements with the appropriate stakeholders before designing the authentication and authorization boundary.
 
-Reasoning: the acquisition search behavior should not depend on the details of one vendor's SDK or response envelope.
+---
 
-Tradeoff: a provider abstraction introduces another interface in a small prototype. It is justified here because provider separation is directly relevant to reliability, testability, and the challenge requirements.
+## 10. AI Reliability and Trust Boundary
 
-The implemented provider is OpenAI, configured through the backend-only `OPENAI_API_KEY` environment variable with optional `OPENAI_MODEL`, which defaults to `gpt-5.4-mini`.
+The `/assist/query` endpoint uses an LLM to translate a natural-language acquisition query into structured filtering criteria.
 
-## AI hallucination and malformed-output handling
+The LLM is not treated as a trusted source of executable database behavior.
 
-AI responses are deterministically validated before they can influence database access.
-
-Examples of invalid output include:
+The boundary is:
 
 ```text
-Unknown filter field
-Unsupported status value
-Unsupported priority value
-Wrong data type
-Malformed JSON
-Missing required structure
-Unexpected operator
-Out-of-range numeric value
-```
-
-Invalid model output is never silently converted into an unrestricted query.
-
-The API returns an explicit fallback or low-confidence state when provider output cannot be safely used, rather than allowing uncertain or invalid AI output to influence database access.
-
-Reasoning: a plausible-looking but incorrect acquisition result is more dangerous than an explicit statement that the system could not confidently interpret the request.
-
-## AI confidence and fallback are user-visible
-
-AI uncertainty is part of the product behavior, not merely a server-log concern.
-
-The React interface must distinguish a normal interpreted query from a low-confidence or fallback result. Users should be able to tell when the system did not confidently understand their request.
-
-Reasoning: hiding uncertainty would encourage users to treat probabilistic interpretation as deterministic search behavior.
-
-The exact presentation will be reconciled with the final React implementation before submission.
-
-## No direct LLM-to-database path
-
-There is intentionally no architectural path from the LLM provider directly to PostgreSQL.
-
-All database access remains owned by the application.
-
-This means:
-
-```text
-LLM -> SQL execution
-```
-
-is not an allowed path.
-
-The allowed path is:
-
-```text
-LLM
- |
- v
-Structured filter
- |
- v
+Natural-language query
+        │
+        ▼
+       LLM
+        │
+        ▼
+Structured candidate filter
+        │
+        ▼
 Application validation
- |
- v
-Parameterized SQL owned by the API
- |
- v
-PostgreSQL
+        │
+        ▼
+Validated database query
+        │
+        ▼
+Matching acquisition requests
 ```
 
-This boundary remains true even if the LLM provider changes.
+Model output is validated before it is allowed to influence database access. Unknown fields, unsupported structures, malformed output, and other out-of-schema responses are rejected rather than passed through to SQL.
 
-## Dashboard aggregation belongs in PostgreSQL
+Provider availability is handled conservatively. If the LLM provider is unavailable, AcquireIQ does not attempt to fabricate an AI interpretation or silently substitute another behavior. The AI-assisted search is treated as unavailable and the user should receive a clear indication that the AI operation could not be completed. Production resilience behavior such as retries, provider failover, or other availability mechanisms would require operational requirements that are outside the scope of this challenge.
 
-Dashboard metrics are produced through PostgreSQL aggregation rather than by retrieving every acquisition request and reducing the data in Node.js.
+This design deliberately separates **language interpretation** from **application authority**.
 
-Reasoning: PostgreSQL is designed to filter and aggregate relational data efficiently. It also avoids transferring rows the dashboard does not need.
+The model proposes an interpretation. The application decides whether that interpretation is valid.
 
-Tradeoff: dashboard SQL may be more specialized than generic repository methods, but that specialization reflects an actual API use case.
+Low-confidence or malformed AI behavior is surfaced visibly rather than silently presented as an authoritative result. This is important because a plausible-looking AI response is not necessarily a correct one.
 
-## Frontend architecture
+In a production system, I would extend the AI reliability boundary with structured observability and measure real-world reliability using:
 
-The React application uses the existing centralized API-client pattern and reusable components rather than issuing ad hoc `fetch` calls throughout the component tree.
+- **Evaluation and correctness:** Maintain a labeled evaluation set derived from real contracting-office queries and compare the AI-produced validated filters with the expected filters. Track the percentage interpreted correctly, validation-rejection rate, low-confidence rate, fallback rate, and provider-failure rate.
 
-The UI must consume the real backend API.
+- **False-confidence and change monitoring:** Review cases where the system produced a confident but incorrect interpretation, because those failures present greater risk than an explicit fallback. Track results by model and prompt version so changes can be evaluated against the same baseline before deployment.
 
-The primary user-facing areas are expected to include:
+---
 
-```text
-Acquisition pipeline
-Acquisition request detail
-Approval chain
-Status actions
-Dashboard information
-AI-assisted search
-AI confidence/fallback state
-Loading state
-Error state
-```
+## 11. Data Modeling
 
-Reasoning: API access and error handling are cross-cutting behavior. Keeping transport concerns centralized makes UI components easier to reason about and keeps backend contract changes localized.
+The relational model follows the entities required by the challenge: acquisition requests, vendors, contracts, approvals, protests, and users.
 
-The exact component breakdown will be documented as the interface is implemented.
+PostgreSQL is a good fit because the application contains strongly related domain entities, benefits from referential integrity, and requires transactional concurrency behavior for request-status updates.
 
-## Error handling
+Parallel approvals are represented by allowing multiple approval records to share the same `stage_sequence`. This avoids embedding individual approvers into request records and allows the approval chain to represent both sequential stages and parallel participants.
 
-Expected operational failures are represented intentionally by the backend.
+The model intentionally does not introduce a persisted `current_stage` field merely to compensate for the incomplete workflow definition. Adding such a field would require defining authoritative rules for changing it, which returns to the unresolved approval-lifecycle questions described above.
 
-Examples include invalid request data, missing acquisition requests, invalid workflow transitions, concurrent update conflicts, database failures, LLM-provider failures, malformed model responses, and low-confidence AI interpretation.
+---
 
-Reasoning: returning a generic `500` for every failure hides distinctions the frontend and reviewer need to understand.
+## 12. Protest Scope
 
-The implemented API distinguishes validation failures, missing resources, invalid workflow transitions, and unexpected server failures through explicit HTTP status codes and structured error responses.
+Protests are modeled because they are part of the required data model and are relevant to acquisition-request detail and dashboard information.
 
-## Testing priorities and verification
+The required API, however, does not specify a protest lifecycle operation. Protest resolution is identified separately as an optional stretch capability.
 
-Backend testing is weighted toward behavior whose failure could produce incorrect acquisition state or misleading AI results.
+I therefore did not expand protests into a complete filing/resolution workflow.
 
-The completed backend regression suite verifies the highest-risk areas, including:
+This is another example of intentionally avoiding functionality that would require additional business rules beyond the required implementation. The application can represent and expose the required protest information without pretending to implement a lifecycle contract that was not part of the core scope.
 
-```text
-Status-transition rules
-Parallel-stage completion
-Concurrent status updates
-Request validation
-Database constraints
-AI structured-filter validation
-Hallucinated AI fields
-Malformed provider output
-AI fallback behavior
-API/database integration
-```
+---
 
-Reasoning: a prototype does not need equal test density everywhere. Workflow correctness and the AI trust boundary carry more risk than static presentation code.
+## 13. Frontend Design
 
-## Scope and time constraint
+The frontend is intentionally centered on one meaningful contracting-officer workflow rather than being expanded into a large multi-page application.
 
-The challenge specifies approximately 4–6 hours of focused implementation effort.
+The interface provides the required pipeline visibility, status grouping/filtering, request detail, approval-chain information including parallel groupings, contract/protest context, status advancement, and natural-language assisted search.
 
-Scope decisions therefore prioritize a narrow, complete, defensible vertical slice over implementing every possible acquisition-management feature.
+Real API calls are used throughout the workflow. Loading and error conditions are represented explicitly, and successful status updates are reflected back into the UI rather than requiring a page reload.
 
-Authentication and production deployment are explicitly skippable challenge concerns and are not priorities for the core implementation.
+Keeping the frontend relatively small also made it possible to exercise the workflow end to end. That end-to-end interaction was ultimately what exposed the approval-stage/request-status ambiguity described earlier.
 
-Optional stretch work is deferred until after the employer challenge submission so the remaining effort stays focused on completing and verifying the required end-to-end implementation.
+This reinforces why I consider executable prototypes and user interaction part of requirements discovery rather than merely a presentation step after requirements have supposedly been completed.
 
-Post-submission development candidates include:
+---
 
-```text
-Protest resolution endpoint
-AI query evaluation set
-Pagination
-API versioning
-```
+## 14. What Would Break at Scale
 
-Anything not completed will be identified explicitly rather than implied to exist.
+The scale concern I would address first is the current unbounded `GET /requests` operation. At 10× the data volume, continuing to return the complete matching request collection would significantly increase database query work, response payload size, network transfer, and frontend rendering work.
 
-## AI-assisted development workflow
+My proposed fix would be server-side pagination, with filtering and sorting remaining server-side so that each request operates on a bounded result set.
 
-AI tools may be used during development, but generated output is not assumed to be correct.
+Other parts of the architecture could also become scaling concerns depending on the actual production workload, including database query performance and contention, LLM-provider latency and rate limits, and application infrastructure. Those are plausible concerns, but the challenge does not provide enough workload or operational data to determine which would become a bottleneck first. I would measure those areas under representative production load before prescribing additional architectural changes.
 
-Code, documentation, architecture descriptions, and generated artifacts must be reviewed against the actual challenge requirements and the running application.
+For that reason, my answer to scale is not a speculative infrastructure diagram. My first step would be to establish the actual production requirements and workload, measure the existing system, identify the first real bottleneck, and then optimize that bottleneck.
 
-The development experience itself reinforces the same reliability principle used inside AcquireIQ: AI can accelerate work, but its output requires verification.
+The most important prerequisite remains the same as elsewhere in this design. The baseline business workflow must first be clearly understood and validated. There is little value in scaling infrastructure for a workflow whose behavior is still not fully defined.
 
-When AI-generated work introduces errors or rework, that is treated as a tooling and validation problem rather than hidden from the engineering record. In a production environment, model choice and AI-assisted development tooling would be evaluated empirically based on accuracy, rework, latency, cost, and developer productivity rather than assumed from brand or familiarity.
+---
 
-## Scale consideration
+## 15. What I Would Do Next
 
-The challenge does not require large-scale production architecture, so the prototype should avoid speculative infrastructure.
+My first next step would **not** be adding more code.
 
-At roughly 10x the prototype workload, likely areas to revisit include database indexing based on observed query plans, pagination for request listings, dashboard-query cost, connection-pool sizing, and external LLM latency/rate limits.
+The single most important next improvement would be to complete and validate the approval workflow with actual contracting-office users and acquisition-domain SMEs.
 
-The final Lead Design Note will select one concrete 10x concern from the implemented system and explain the first production change that should address it.
+I would use the existing application as a working prototype and walk through concrete scenarios until the relationship among request status, approval stages, approval decisions, rejection, and advancement was unambiguous. The resulting decisions would be captured as explicit acceptance criteria and workflow diagrams before implementation continued.
 
-## Lead Design Note
+Only then would I implement the clarified approval lifecycle. I consider this more valuable than immediately adding another technical feature because the application already exposes the central unresolved question discovered during end-to-end use: what the complete approval process is actually supposed to do. Resolving that with the people who perform and understand the acquisition process would establish the business contract needed to make subsequent API, data-model, authorization, and UI decisions without guessing.
 
-The final 300–500 word Lead Design Note will be written after implementation so that it reflects actual engineering decisions rather than hypothetical ones.
+---
 
-It must address:
+## 16. Stretch Goals
 
-1. the most important schema-modeling decision and its tradeoff
-2. one API contract decision that would change with additional time
-3. AI hallucination/provider-failure handling and how reliability would be measured in production
-4. one concern at approximately 10x scale and how it would be addressed
-5. the single highest-value next improvement for a real contracting office
+Optional stretch functionality was not a primary implementation goal.
 
-This running document provides the implementation history from which that shorter final note can be derived.
+The challenge explicitly identifies its stretch items as optional, and I prioritized completing, exercising, validating, and documenting the required scope rather than expanding the implementation for breadth. Where additional work directly strengthened confidence in required behavior, I included it. For example, AcquireIQ includes an automated simultaneous-update concurrency test in addition to the required concurrency verification explanation.
 
-## Documentation discipline
+I did not pursue the broader optional capabilities such as protest resolution or deployment work as substitutes for completing the core application. The required exercise already spans data modeling, database setup and seed data, concurrency-safe request-status behavior, REST APIs, LLM integration and validation, frontend integration, testing, and design documentation.
 
-This file distinguishes between decisions already made, behavior already implemented, and intended implementation.
+This was also consistent with the most important issue discovered during implementation: further development is less valuable than first resolving the approval-workflow ambiguities with actual users and domain SMEs. Given additional time, that validation would take priority over implementing optional features simply to increase the amount of code delivered.
+---
 
-Statements about implementation status should be updated only after the corresponding behavior has been verified, with frontend behavior remaining an implementation target until the React workflow is complete.
+## 17. Final Design Takeaway
 
-The goal is for the repository documentation to describe the system that actually exists, not the system that was originally imagined.
+The most important lesson from this implementation is not about React, Express, PostgreSQL, or an LLM.
+
+It is that ambiguous domain behavior should not be resolved by increasingly elaborate developer assumptions.
+
+My initial mistake was attempting to fill in missing workflow semantics while implementing individual requirements rather than first validating the complete workflow as a user would experience it. The ambiguity became clear once I exercised that complete flow through the UI.
+
+In a production engagement, I would address that much earlier through substantial end-user and SME interaction and rapid prototyping. Those activities are not overhead surrounding software development; for a domain workflow such as acquisition management, they are part of determining what software should actually be built.
+
+Where the challenge provides an explicit requirement, AcquireIQ implements it. Where the challenge leaves a technical implementation choice, AcquireIQ makes and documents that choice. Where the challenge leaves a consequential business rule unresolved, I would seek clarification rather than guess.

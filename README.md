@@ -1,49 +1,37 @@
 # AcquireIQ
 
-AI-assisted government IT acquisition pipeline tracker built for the
-iAdeptive Full-Stack Engineering Lead Challenge.
+AI-assisted government IT acquisition pipeline tracker built for the iAdeptive Full-Stack Engineering Lead Challenge.
 
 ## Overview
 
-AcquireIQ models a government IT acquisition pipeline covering
-acquisition requests, users, vendors, contracts, approvals, and
-protests.
+AcquireIQ models a government IT acquisition pipeline covering acquisition requests, users, vendors, contracts, approvals, and protests.
 
-The application adds two important capabilities to a traditional
-acquisition tracker:
+The application implements acquisition-request tracking and status advancement, dashboard reporting, request creation and detail, and AI-assisted natural-language pipeline search.
 
--   **Parallel approval stages** --- multiple approvers can be assigned
-    to the same stage. A request advances toward approval only after every
-    required approver in the current stage has approved. A pending or
-    rejected decision in the current stage blocks approval.
--   **AI-assisted pipeline search** --- contracting officers can search
-    the acquisition pipeline using natural language instead of manually
-    constructing filters.
+Parallel approvals are supported at the data-model and read/display levels. Multiple approvers can be assigned to the same `stage_sequence`, and existing approval stages and decisions are returned by the API and displayed in the UI. **I initially attempted to implement the approval workflow more completely by filling in behavior that appeared reasonable from the written requirements. However, once the API and UI were integrated and I exercised the workflow end to end from a user's perspective, inconsistencies in those assumptions became apparent.** The challenge does not fully define how approval decisions are recorded, how mixed approved/rejected decisions affect progression, or how approval-stage progression relates to request status. Had those gaps been apparent during my initial requirements review, I would have sought clarification before implementation. Given the challenge timebox and lack of access to end users or acquisition-domain SMEs, I ultimately removed the assumed workflow behavior rather than present invented business rules as requirements.
 
-The central design principle is simple: **AI output is useful input, but
-it is not trusted application state.** LLM-generated filters are
-validated by deterministic application logic before they can affect a
-database query.
+The central design principle is simple: **AI output is useful input, but it is not trusted application state.** LLM-generated filters are validated by deterministic application logic before they can affect a database query.
 
 ------------------------------------------------------------------------
 
 ## Architecture
 
 ```text
-+-----------------------------------------------------------------------+
-|                               React UI                                |
-|                                                                       |
-|  Acquisition Pipeline   Request Detail   Status Actions   AI Search   |
-+----------------------------------+------------------------------------+
++-------------------------------------------------------------------------+
+|                               React UI                                  |
+|                                                                         |
+|  Acquisition Pipeline     Create Request   Request Detail   AI Search   |
+|  Request Filtering        Request Status Actions                        |
++----------------------------------+--------------------------------------+
                                    |
                                    | REST / JSON
                                    v
 +-----------------------------------------------------------------------+
 |                         Node / Express API                            |
 |                                                                       |
-|  Request Validation        Business Rules                             |
-|  Approval Workflow         Status Transitions                         |
-|  AI Search                                                            |
+|  Request Validation        Request Filtering                          |
+|  Request Status Updates    Request Detail                             |
+|  Dashboard                 AI Search                                  |
 +----------------------+-------------------------------+----------------+
                        |                               |
                        |                               | Natural-language
@@ -97,8 +85,7 @@ database query.
              +---------------------------------------------------------+
 ```
 
-The LLM never connects directly to PostgreSQL and never supplies
-executable SQL.
+The LLM never connects directly to PostgreSQL and never supplies executable SQL.
 
 ------------------------------------------------------------------------
 
@@ -109,8 +96,7 @@ executable SQL.
 -   React
 -   Vite
 -   centralized API client
--   reusable components for pipeline, request detail, workflow actions,
-    dashboard data, and AI search
+-   reusable components for pipeline, request creation, request detail, request status actions, dashboard data, and AI search
 -   explicit loading, error, conflict, and AI-confidence/fallback states
 -   configurable client-side logging
 
@@ -123,9 +109,10 @@ executable SQL.
 -   REST API
 -   Swagger / OpenAPI
 -   centralized request and application logging
--   service-layer business rules
+-   service-layer request-status and validation rules
 -   deterministic request and AI-output validation
 -   parameterized PostgreSQL queries
+-   The challenge permits Node, Python, or Go for the API. AcquireIQ uses Node.js with TypeScript and Express. I chose Node because it keeps the backend in the same JavaScript/TypeScript ecosystem as the React frontend while remaining well suited to the challenge's REST API and PostgreSQL integration. TypeScript strict mode adds compile-time checking around API contracts, service boundaries, and database-facing application logic.
 
 ### Database
 
@@ -136,7 +123,7 @@ executable SQL.
 -   foreign keys and CHECK constraints
 -   production-relevant indexes
 -   demonstration seed data
--   transaction-based concurrency protection for workflow state
+-   transaction-based concurrency protection for request-status updates
 
 ### AI
 
@@ -240,7 +227,7 @@ acquireiq/
 |
 +-- docs/
 |   +-- Program_Specification_Checklist.docx
-|   +-- Requirements_Full.pdf
+|   +-- Requirements_Full.docx
 |
 +-- frontend/
 |   +-- src/
@@ -248,16 +235,32 @@ acquireiq/
 |   |   |   +-- client.js
 |   |   |
 |   |   +-- components/
+|   |   |   +-- AcquisitionPipeline.jsx
 |   |   |   +-- AppHeaderCard.jsx
+|   |   |   +-- ApprovalStage.jsx
 |   |   |   +-- BackendHealthCard.jsx
-|   |   |   +-- ErrorMessage.jsx
+|   |   |   +-- CreateRequest.jsx
+|   |   |   +-- Dashboard.jsx
 |   |   |   +-- GenericTabs.jsx
 |   |   |   +-- MainContentCard.jsx
+|   |   |   +-- Message.jsx
+|   |   |   +-- Modal.jsx
+|   |   |   +-- PipelineFilters.jsx
+|   |   |   +-- RequestCard.jsx
+|   |   |   +-- RequestDetail.jsx
 |   |   |
 |   |   +-- logging/
 |   |   |   +-- logger.js
 |   |   |
-|   |   +-- App.css
+|   |   +-- styles/
+|   |   |   +-- App.css
+|   |   |   +-- create-request.css
+|   |   |   +-- dashboard.css
+|   |   |   +-- error-message.css
+|   |   |   +-- modal.css
+|   |   |   +-- pipeline.css
+|   |   |   +-- request-detail.css
+|   |   |
 |   |   +-- App.jsx
 |   |   +-- main.jsx
 |   |
@@ -274,7 +277,8 @@ acquireiq/
 +-- ARCHITECTURE_AND_DEPLOYMENT.md
 +-- DESIGN_CONSIDERATIONS.md
 +-- README.md
-+-- WORKFLOW_STATE_MACHINE.md
++-- REQUIREMENTS_TO_DESIGN_VERIFICATION.md
++-- REQUEST_STATUS_STATE_MACHINE.md
 ```
 
 ------------------------------------------------------------------------
@@ -294,18 +298,21 @@ protests
 
 ### Parallel approvals
 
-Multiple approval records may share the same `stage_sequence`. Those
-records form a parallel approval stage.
+Multiple approval records may share the same `stage_sequence`. Those records represent parallel approvers within the same approval stage.
 
-A request advances toward approval only after every required approver
-in the current stage has approved. A pending or rejected decision in
-the current stage blocks approval.
+AcquireIQ supports this structure at the data-model and read/display levels. Existing approval records and decisions can be stored, retrieved, grouped by `stage_sequence`, and displayed in request detail.
+
+The application does not provide operations for assigning approvers, recording approval decisions, or advancing approval stages. The challenge does not fully define those operations or how approval-stage progression relates to acquisition-request status, so that behavior is intentionally not inferred or implemented.
 
 ### Database integrity
 
 Rules that must always be true about stored data should be enforced by PostgreSQL itself when possible, rather than relying only on application code.
 
-The schema includes primary keys, foreign keys, uniqueness rules, CHECK constraints, and indexes for common workflow access patterns.
+The schema includes primary keys, foreign keys, uniqueness rules, CHECK constraints, and indexes for common application access patterns.
+
+For example, the schema requires a contract's `period_of_performance_end` to be on or after its `award_date` and requires approval decision timestamps to remain consistent with the recorded approval decision.
+
+The `idx_acquisition_requests_status_priority` index supports the pipeline's common filtering of acquisition requests by status and priority.
 
 ------------------------------------------------------------------------
 
@@ -331,29 +338,25 @@ GET    /api/docs
 
 Swagger / OpenAPI documentation is exposed through `/api/docs`.
 
-`GET /requests/:id` returns the acquisition request together with its
-approval records, contract when one exists, and protests. Approval
-records include `stageSequence`, allowing parallel approvers assigned
-to the same stage to be identified without duplicating workflow logic
-in the client.
+`GET /requests/:id` returns the acquisition request together with its approval records, contract when one exists, and protests. Approval records include `stageSequence`, allowing parallel approvers assigned to the same stage to be identified by the client.
 
-HTTP routes remain thin: they parse and validate requests, invoke
-application services, select HTTP status codes, and format responses.
-Workflow and acquisition business rules live outside the route layer.
+HTTP routes remain thin: they parse and validate requests, invoke application services, select HTTP status codes, and format responses.
+
+Request-status and acquisition business rules live outside the route layer.
 
 ------------------------------------------------------------------------
 
-## Workflow and Concurrency Safety
+## Request Status and Concurrency Safety
 
-Acquisition request status changes are controlled by a fixed workflow state machine:
+Acquisition-request status changes are controlled by a fixed request-status state machine:
 
 `draft → submitted → in_review → approved → awarded`
 
-Requests may also transition to `rejected` from supported workflow states. `awarded` and `rejected` are terminal states. Invalid jumps, skipped workflow states, and attempts to revive terminal requests are rejected with HTTP `422`.
+Requests may also transition from `submitted` to `rejected` or from `in_review` to `rejected`. `awarded` and `rejected` are terminal statuses.
 
-The complete transition rules and approval semantics are documented in [WORKFLOW_STATE_MACHINE.md](WORKFLOW_STATE_MACHINE.md).
+The complete acquisition-request status transition rules are documented in [REQUEST_STATUS_STATE_MACHINE.md](REQUEST_STATUS_STATE_MACHINE.md).
 
-Status transitions are concurrency-safe. `PATCH /requests/:id/status` executes the transition inside a PostgreSQL transaction and locks the acquisition request row with `SELECT ... FOR UPDATE` before validating its current state. This ensures concurrent callers cannot both validate a transition against the same stale status.
+Status transitions are concurrency-safe. `PATCH /requests/:id/status` executes the operation inside a PostgreSQL transaction and locks the acquisition-request row with `SELECT ... FOR UPDATE` before the API/service validates the requested transition. The API/service owns the fixed transition rules; the database row lock ensures those rules are evaluated against the authoritative current status when concurrent callers attempt to update the same request.
 
 For example, if two clients simultaneously attempt to transition the same request from `draft` to `submitted`, one transaction acquires the row lock first and completes the transition. The second transaction then acquires the lock and re-evaluates the now-current `submitted` state, causing the duplicate `submitted → submitted` transition to be rejected.
 
@@ -405,6 +408,8 @@ Matching acquisition requests
 
 The LLM does **not** generate executable SQL.
 
+The LLM prompt used for this integration is checked into the repository at [`backend/src/services/ai/prompt.ts`](backend/src/services/ai/prompt.ts).
+
 Only supported filter fields, operators, and values are accepted.
 Hallucinated fields, unsupported values, malformed responses, and other
 out-of-schema model output are rejected before database access.
@@ -415,7 +420,7 @@ The validated AI filter allow-list currently supports:
 
 If the provider fails or the response cannot be trusted, the API returns
 an explicit fallback/low-confidence result rather than silently treating
-uncertain AI output as valid. The React UI will distinguish that state from
+uncertain AI output as valid. The React UI distinguishes that state from
 a normal successful AI-assisted result.
 
 ------------------------------------------------------------------------
@@ -450,14 +455,14 @@ additional abstraction layer.
 
 ### Seed data
 
-After the schema is ready:
+After the schema is ready, from the repository root:
 
-```bash
-cd backend
-npm run seed
+```bat
+backend\scripts\seed-database.bat
 ```
 
-The seed runner executes:
+The seed launcher locates PostgreSQL `psql.exe`, prompts for the PostgreSQL
+administrator password, and executes:
 
 ```text
 backend/seeds/001_acquireiq_seed.sql
@@ -491,11 +496,31 @@ backend\scripts\create-database.bat
 
 ### 2. Configure and seed the backend
 
+Copy the backend environment template:
+```bat
+copy backend\.env.example backend\.env
+```
+
+The database bootstrap creates the local `acquireiq_app` application role using the development credentials represented in `.env.example`.
+
+To use live AI-assisted search, replace the `OPENAI_API_KEY` placeholder in `backend/.env` with your OpenAI API key.
+
+See [Configuration](#configuration) below for the supported environment variables and example values.
+
+From the repository root, seed the demonstration data:
+
+```bat
+backend\scripts\seed-database.bat
+```
+
+The seed launcher prompts for the PostgreSQL administrator password.
+
+Then configure and start the backend:
+
 ```bash
 cd backend
 npm install
 npm run generate:schemas
-npm run seed
 npm run dev
 ```
 
@@ -529,6 +554,14 @@ npm run dev
 
 Vite prints the local frontend URL when the development server starts.
 
+Because authentication is outside the challenge scope, the frontend accepts the acting user ID through the `user` query parameter. For example:
+
+```text
+http://localhost:5173/acquireiq/?user=<user-id>
+```
+
+This query parameter is the challenge-permitted substitute for an authentication flow in the local implementation.
+
 ------------------------------------------------------------------------
 
 ## Configuration
@@ -536,8 +569,7 @@ Vite prints the local frontend URL when the development server starts.
 Backend configuration is supplied through environment variables. Secrets
 remain backend-only and are never committed to the repository.
 
-Database configuration uses `DATABASE_URL` for normal application and
-seed connections.
+Database configuration uses `DATABASE_URL` for normal application connections.
 
 ```env
 DATABASE_URL=postgresql://acquireiq_app:<password>@localhost:5432/acquireiq
@@ -561,9 +593,7 @@ VITE_LOG_LEVEL=verbose
 
 Logging defaults to `none`.
 
-AcquireIQ currently uses OpenAI as its LLM provider. Reviewers supply
-their own API key through the backend environment without modifying
-source code:
+AcquireIQ currently uses OpenAI as its LLM provider. Reviewers supply their own API key in the backend `.env` file without modifying source code:
 
 ```env
 OPENAI_API_KEY=<reviewer-api-key>
@@ -584,7 +614,7 @@ this repository.**
 
 ## Frontend Behavior
 
-The React application provides the user-facing workflow for:
+The React application provides the user-facing interface for:
 
 -   viewing the acquisition pipeline
 -   viewing acquisition-request detail
@@ -597,9 +627,7 @@ The React application provides the user-facing workflow for:
 -   visibly distinguishing normal results from AI
     fallback/low-confidence states
 
-The frontend does not duplicate authoritative workflow rules. It uses
-API responses to determine and display valid state, while the backend
-remains responsible for enforcing transitions and database integrity.
+The frontend does not duplicate authoritative request-status transition rules. It uses API responses to determine and display valid state, while the backend remains responsible for enforcing request-status transitions and database integrity.
 
 ------------------------------------------------------------------------
 
@@ -607,13 +635,11 @@ remains responsible for enforcing transitions and database integrity.
 
 ### Keep HTTP routes thin
 
-Routes handle HTTP concerns. Business behavior belongs in services and
-database-aware workflow logic.
+Routes handle HTTP concerns. Business behavior belongs in services and database-aware application logic.
 
 ### Let PostgreSQL protect persistent state
 
-Constraints, transactions, and indexes provide durable guarantees that
-do not depend on a particular UI or API caller behaving correctly.
+PostgreSQL constraints protect persisted data rules such as the valid request-status value domain, while transactions and row locking provide concurrency protection. Request-status transition rules remain application-owned and are enforced by the API/service.
 
 ### Treat AI output as untrusted input
 
@@ -630,8 +656,7 @@ migration framework solely to execute SQL.
 
 ### Make failure visible
 
-API failures, workflow conflicts, loading states, and AI uncertainty are
-represented explicitly rather than silently hidden.
+API failures, request-status conflicts, loading states, and AI uncertainty are represented explicitly rather than silently hidden.
 
 ------------------------------------------------------------------------
 
@@ -640,57 +665,66 @@ represented explicitly rather than silently hidden.
 Testing focuses on the behavior with the greatest correctness risk:
 
 ```text
-PASS: 98
+PASS: 106
 FAIL: 0
-TOTAL: 98
+TOTAL: 106
 ALL BACKEND REGRESSION TESTS PASSED.
 ```
 
 -   valid status transitions
 -   invalid status transitions
--   parallel approval completion
 -   concurrent status-update attempts
 -   request validation
 -   request-detail behavior, including approvals, contract, and protests
 -   PostgreSQL primary-key sequence integrity
--   database-backed workflow invariants
+-   database enforcement of valid request statuses
 -   AI structured-filter validation
 -   hallucinated or malformed AI output
 -   AI provider/fallback behavior
 
-Tests exercise backend business behavior independently of the React UI
-wherever practical.
+Tests exercise backend business behavior independently of the React UI wherever practical.
 
 ------------------------------------------------------------------------
 
-## Challenge Scope
+### Parallel approvals
 
-The challenge prioritizes strong, defensible end-to-end behavior over
-unnecessary feature count.
+The PostgreSQL data model supports parallel approvals by allowing multiple approval records to share the same `stage_sequence`.
+
+This is a data-model and read/display capability only. AcquireIQ can store, retrieve, and display existing parallel approval records, but the API and UI do not provide a mechanism for recording approval decisions or advancing approval stages.
+
+The challenge states that a request advances to the next approval stage once every approver at the current stage has recorded a decision, but it does not define how those decisions are recorded, how mixed approved/rejected decisions affect progression, or how approval-stage progression relates to acquisition-request `status`. Those gaps became apparent during end-to-end testing of the integrated UI and API. Given the challenge timebox, I removed the initially assumed behavior rather than invent consequential business rules that were not defined by the requirements.
 
 ### Target implementation scope
 
-The completed challenge implementation is designed to cover:
+The completed challenge implementation covers:
 
 -   PostgreSQL domain schema and demonstration data
--   parallel approval modeling
+-   parallel approval data modeling and read/display support
 -   acquisition-request REST API
--   concurrency-safe status transitions
+-   request creation and detail
+-   request filtering
+-   concurrency-safe request-status transitions
 -   dashboard data
 -   AI-assisted natural-language pipeline search
 -   deterministic validation of AI output
--   React acquisition workflow
--   explicit error and AI-fallback states
+-   React acquisition pipeline view with request creation, request detail, filtering, and request-status updates
+-   explicit loading, error, and AI-fallback states
 -   Swagger / OpenAPI documentation
 -   targeted tests around correctness-sensitive behavior
 
+### With more time
+
+The highest-priority next step would be to clarify the approval lifecycle with contracting-office users and acquisition-domain subject-matter experts, then implement that clarified workflow. Specifically, I would define how approval decisions are recorded, how rejected or mixed decisions affect stage progression, and how approval-stage progression relates to acquisition-request status before adding the corresponding API and UI operations.
+
 ### Intentionally out of scope
 
-Authentication and production deployment are outside the challenge's
-required implementation scope.
+Authentication and production deployment are outside the challenge's required implementation scope. Because authentication is not implemented, the frontend uses a user ID query parameter to identify the acting user, as permitted by the challenge requirements.
 
-Optional stretch features are implemented only when they add more value
-than strengthening required behavior, tests, or documentation.
+A complete approval workflow is also intentionally **not implemented**. The data model supports approval stages and parallel approvers, and existing approval data can be retrieved and displayed, but AcquireIQ does not provide operations for assigning approvers, recording approval decisions, advancing approval stages, or coupling approval-stage progression to acquisition-request status.
+
+In a real production environment, these capabilities would not simply be omitted. I would work with end users, acquisition-domain subject-matter experts, and product stakeholders to clarify the intended workflow before implementing them. That process would define how approvers are assigned, how decisions are recorded, how rejected or mixed decisions affect progression, and how approval stages relate to request status. The challenge does not provide enough information to define those consequential business rules without making assumptions.
+
+Optional stretch functionality was not a primary implementation goal. Given the challenge timebox, I prioritized completing, exercising, validating, and documenting the required implementation. Where additional work directly strengthened required behavior, such as the automated simultaneous-update concurrency test, I included it rather than pursuing broader optional features.
 
 ------------------------------------------------------------------------
 
@@ -698,81 +732,49 @@ than strengthening required behavior, tests, or documentation.
 
 ### Parallel approvals
 
-Parallelism is represented in the data model by multiple approval
-assignments sharing the same `stage_sequence`. This keeps workflow state
-explicit and queryable without introducing a separate stage table solely
-for the challenge.
+Parallel approvals are represented in the data model by multiple approval records sharing the same `stage_sequence`. This allows the database to represent parallel approvers without introducing a separate stage table solely for the challenge. Approval data is retrieved and displayed by the application, but approval assignment, decision entry, stage progression, and its relationship to request status are intentionally not implemented because those business rules are not fully defined by the challenge.
 
 ### Database bootstrap
 
-The initial database/schema setup is executed directly by native
-PostgreSQL tooling. The BAT launcher is the runnable migration
-equivalent and keeps SQL setup independent from Node application code.
+The initial database/schema setup is executed directly by native PostgreSQL tooling. The BAT launcher is the runnable migration equivalent and keeps SQL setup independent from Node application code.
 
 ### Concurrency control
 
-Status changes are protected at the database transaction boundary
-because correctness must hold even when multiple API requests arrive
-simultaneously.
+Request-status changes are protected at the database transaction boundary because correctness must hold even when multiple API requests arrive simultaneously.
 
 ### AI boundary
 
-The LLM is limited to interpreting natural language into a structured
-filter. The backend owns validation and SQL construction, reducing the
-blast radius of hallucinated or malformed model output.
+The LLM is limited to interpreting natural language into a structured filter. The backend owns validation and SQL construction, reducing the blast radius of hallucinated or malformed model output.
 
 ### Frontend responsibility
 
-The React UI communicates state and available actions but does not
-become the source of truth for workflow correctness. Enforcement remains
-server-side.
+The React UI displays application state and the actions actually supported by the implementation, including request creation and request-status updates. The backend remains the source of truth for validating and enforcing request-status transitions.
 
 ------------------------------------------------------------------------
 
 ## Lead Design Note
 
-The final submission includes a 300--500 word Lead Design Note covering:
+The Lead Design Note is [`DESIGN_CONSIDERATIONS.md`](DESIGN_CONSIDERATIONS.md). It documents the key design decisions, tradeoffs, deliberate scope limitations, production considerations, and unresolved business requirements identified during implementation and end-to-end validation.
 
-1.  the most important schema-modeling decision and its tradeoff
-2.  one API contract decision that would change with additional time
-3.  AI hallucination/provider-failure handling and production
-    reliability measurement
-4.  one design concern at approximately 10x scale and the proposed
-    solution
-5.  the single highest-value next improvement for a real contracting
-    office
+It also addresses the five areas requested by the challenge:
 
-The note is maintained with the challenge documentation so reviewers can
-distinguish deliberate tradeoffs from accidental omissions.
+1. the most important schema-modeling decision and its tradeoff
+2. an API contract decision that would change with additional time
+3. AI hallucination and provider-failure handling, including production reliability measurement
+4. a design concern at approximately 10x scale and the proposed solution
+5. the single highest-value next improvement for a real contracting office
 
 ------------------------------------------------------------------------
 
 ## Documentation
 
-Supporting challenge materials are maintained under `docs/`, including
-the original iAdeptive requirements and the AcquireIQ implementation
-specification/checklist.
+Supporting challenge materials are maintained under `docs/`. `Requirements_Full.docx` is a reference copy of the original iAdeptive challenge requirements captured from the challenge website because PDF/export methods did not preserve the source content and formatting reliably. The requirement text has been preserved, while highlighting, underlining, and other visual annotations were added during requirements review. The folder also contains the AcquireIQ implementation specification/checklist used to track the implementation against those requirements.
 
-The source requirements remain unchanged. The implementation
-specification records how AcquireIQ satisfies those requirements and
-captures implementation decisions and tradeoffs.
+The following repository documents describe the implemented system and the decisions made during the challenge:
 
-------------------------------------------------------------------------
+- [`DESIGN_CONSIDERATIONS.md`](DESIGN_CONSIDERATIONS.md) — the Lead Design Note, documenting key design decisions, tradeoffs, production considerations, deliberate scope limitations, and unresolved business requirements.
+- [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) — supplemental architecture and public deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture and optional portfolio deployment.
+- [`REQUIREMENTS_TO_DESIGN_VERIFICATION.md`](REQUIREMENTS_TO_DESIGN_VERIFICATION.md) — concise requirement-by-requirement verification of how the implementation and design address the challenge requirements.
+- [`REQUEST_STATUS_STATE_MACHINE.md`](REQUEST_STATUS_STATE_MACHINE.md) — the implemented acquisition-request status state machine, including valid transitions and terminal states.
 
-## Project Status
-
-**Backend implementation complete**
-
-The AcquireIQ backend is complete and frozen for frontend integration.
-The PostgreSQL schema and seed data, REST API, request-detail behavior,
-workflow state machine, parallel approval enforcement, concurrency-safe
-status transitions, dashboard API, AI-assisted search, deterministic
-AI-output validation, safe fallback behavior, and Swagger / OpenAPI
-documentation are implemented.
-
-The backend TypeScript/OpenAPI build passes, and the complete backend
-regression suite passes all 98 checks.
-
-Frontend sections in this README describe the intended completed
-challenge experience and will be reconciled with the final React
-implementation before submission.
+Together, these documents distinguish implemented behavior from deliberate design choices and functionality that would require additional business clarification before implementation.

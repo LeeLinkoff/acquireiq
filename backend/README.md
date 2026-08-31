@@ -102,7 +102,7 @@ protests
 
 Plain SQL is used rather than an ORM because the relational rules, constraints, indexes, and concurrency behavior are important parts of the application and should remain explicit.
 
-Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. A request advances toward approval only after every required approver in the current stage has approved. A pending or rejected decision in the current stage blocks approval, while later-stage approvals do not affect completion of the current stage.
+Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. This supports parallel approval representation and allows the application to group and display approvers by stage without inventing approval-stage advancement rules that the challenge does not fully define.
 
 Status changes are business operations rather than arbitrary CRUD updates. Valid transitions are enforced by the application, and PostgreSQL transactions/concurrency controls protect the state used to make those decisions.
 
@@ -181,8 +181,6 @@ Detailed request/response schemas, parameters, and status codes are maintained i
 ## Concurrency Safety
 
 Status transitions are performed inside PostgreSQL transactions. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the corresponding update is performed, preventing competing callers from successfully advancing from the same stale request state.
-
-Parallel approval stages are evaluated from their individual approval records before a request is allowed to advance. Every required approver in the current stage must have approved before the `in_review` → `approved` transition is permitted.
 
 The backend regression suite explicitly exercises competing transitions and verifies that exactly one competing transition succeeds with HTTP 200 while the stale competing transition is rejected with HTTP 422.
 
@@ -306,7 +304,7 @@ Schema generation runs before TypeScript compilation when required by the projec
 
 ## Testing
 
-The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, parallel approval-stage behavior, concurrency-safe competing transitions, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
+The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation in request detail, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
 
 The concurrency regression verifies that two competing transitions against the same request produce exactly one HTTP 200 response and one HTTP 422 response, with the final persisted state reflecting the successful transition.
 
@@ -315,9 +313,9 @@ The AI adversarial checks include SQL-like and unsupported model output and veri
 Final verified backend regression result:
 
 ```text
-PASS: 98
+PASS: 106
 FAIL: 0
-TOTAL: 98
+TOTAL: 106
 ALL BACKEND REGRESSION TESTS PASSED.
 ```
 

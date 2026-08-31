@@ -1,0 +1,134 @@
+# AcquireIQ Requirements-to-Design Verification
+
+## Verification Standard
+
+This document maps the supplied Full-Stack Engineering Lead Challenge requirements to the current AcquireIQ Design Considerations.
+
+The verification uses the following rules:
+
+- A requirement is treated as required only when it is explicitly stated in the supplied challenge.
+- A behavior is not inferred merely because it would be common, reasonable, or desirable in a production acquisition system.
+- When the challenge explicitly requires a capability but leaves its technical implementation unspecified, AcquireIQ may make an explicit technical design choice to satisfy that requirement.
+- When the challenge leaves a consequential business rule unspecified, AcquireIQ does not invent that rule.
+- Optional stretch goals are not treated as required.
+- A Design Considerations section is credited only for what it actually states.
+
+## Full Requirements Verification
+
+| Requirement  | Verification result |
+| --- | --- |
+| **Overall scenario — track procurement requests, vendors, contracts, and approvals.** | **Covered.** Section 11 states that the relational model follows the required entities: acquisition requests, vendors, contracts, approvals, protests, and users. Sections 4, 8, 12, and 13 describe how those entities participate in the implemented API and UI. |
+| **Approval stages can run in parallel.** | **Covered.** Sections 4 and 11 explicitly model multiple approvers in the same `stage_sequence`, allowing parallel approval groupings. |
+| **More than one approver can be assigned to the same `stage_sequence`.** | **Covered exactly as required.** Section 11 states that parallel approvals are represented by allowing multiple approval records to share the same `stage_sequence`. |
+| **A request advances to the next approval stage once every approver at the current stage has recorded a decision.** | **Requirement identified, but its complete executable business behavior is not invented.** Section 3 quotes this requirement and distinguishes approval-stage progression from request-status progression. The challenge does not define how decisions are written through the required API, what a mixed approved/rejected stage means, or how approval-stage advancement relates to request `status`. Sections 3 and 4 explicitly document those unresolved business rules rather than assuming them. |
+| **PostgreSQL schema with migrations, seed data, constraints, parallel approvals, and a concurrency-safe status field.** | **Covered.** The repository contains the PostgreSQL schema/bootstrap and seed implementation, including the required domain tables, constraints, parallel approval data, request-status constraint, and transaction-based concurrency protection for status updates. |
+| **Core entity `acquisition_requests` with the required fields.** | **Covered.** The PostgreSQL schema defines `acquisition_requests` with the required fields and request-status constraint. |
+| **Core entity `vendors` with the required fields.** | **Covered.** The PostgreSQL schema defines `vendors` with the required fields. |
+| **Core entity `contracts` with the required fields.** | **Covered.** The PostgreSQL schema defines `contracts` with the required fields and domain constraints. |
+| **Core entity `approvals` with the required fields.** | **Covered.** The PostgreSQL schema defines `approvals` with the required fields, including `stage_sequence` and `decision`, and supports multiple approvers sharing a stage sequence. |
+| **Core entity `protests` with the required fields.** | **Covered.** The PostgreSQL schema defines `protests` with the required fields and protest-related integrity constraints. |
+| **Core entity `users`, including the specified roles.** | **Covered.** The PostgreSQL schema defines `users` with the required fields and role domain. |
+| **At least 20–30 seed rows spread across tables, including a multi-approver stage and an open protest.** | **Covered.** The checked-in seed data provides the required demonstration dataset, including multiple approvers sharing a `stage_sequence` and an unresolved protest. |
+| **At least one `CHECK` constraint reflecting a real business rule.** | **Covered.** The schema contains multiple business-rule `CHECK` constraints, including requiring a contract period-of-performance end date to be on or after its award date and enforcing consistency between approval decisions and decision timestamps. |
+| **At least one meaningful production index, with explanation in README.** | **Covered.** The schema includes production-relevant indexes including `idx_acquisition_requests_status_priority`, `idx_approvals_request_stage`, and the partial `idx_protests_open_request`; the README documents the database indexing/design approach. |
+| **Brief README modeling/tradeoff note.** | **Covered.** The README documents the relational modeling approach, parallel-approval representation, request-status design, and the deliberate decision not to invent undefined approval-lifecycle behavior. |
+| **API must use Node, Python, or Go.** | **Covered by explicit implementation choice.** Section 1 states Node.js with TypeScript and Express. Node is one of the permitted API choices. |
+| **`GET /requests` — acquisition request list filterable by status and priority.** | **Covered.** `GET /requests` is implemented against PostgreSQL with status and priority filtering. |
+| **`GET /requests/:id` — detail with full approval chain including parallel grouping and associated contract if awarded.** | **Covered.** Section 8 lists the endpoint; Sections 4 and 13 describe request detail, approval-chain information including parallel groupings, and contract/protest context. |
+| **`POST /requests` — create a new acquisition request.** | **Covered.** `POST /requests` validates the request and persists the new acquisition request through the API. |
+| **`PATCH /requests/:id/status` — advance request status through a fixed set of valid transitions.** | **Covered.** Sections 4, 5, 6, 7, and 8 describe the status endpoint, fixed transition graph, backend validation, and concurrency handling. |
+| **Status update must reject invalid jumps, including skipping a stage or reviving a rejected request.** | **Covered.** Section 4 states that invalid jumps are rejected and terminal states cannot be revived. Section 5 defines the explicit request-status graph; Section 6 makes the backend authoritative for validating it. |
+| **The challenge requires fixed status transitions but does not enumerate the complete status set or transition graph.** | **Explicit required design choice.** Section 5 states this gap and defines `draft -> submitted`, `submitted -> in_review/rejected`, `in_review -> approved/rejected`, and `approved -> awarded` as an explicit application design decision. This is a necessary design choice because the required fixed transition behavior cannot be implemented without choosing a graph. It is not presented as a business rule supplied by the challenge. |
+| **Status update must be concurrency-safe under simultaneous writes.** | **Covered.** Section 7 uses a PostgreSQL transaction and `SELECT ... FOR UPDATE`. The requirement mandates concurrency safety but does not mandate the mechanism; row locking is therefore an explicit technical implementation choice. |
+| **Include a concurrency test or written explanation of verification.** | **Covered beyond the minimum requirement.** AcquireIQ includes an automated simultaneous-update test in addition to the written concurrency explanation. Two competing transitions from the same starting state are exercised so that one succeeds and the second is rejected after observing the committed current state. |
+| **Input validation with meaningful errors.** | **Covered.** The API performs server-side request validation and returns meaningful validation/error responses rather than relying on frontend validation. |
+| **Correct HTTP status codes including 200, 201, 400, 404, and 422 where appropriate.** | **Covered.** The implemented routes use the required HTTP status semantics, including success, creation, malformed-input, not-found, and invalid-transition responses. |
+| **`GET /dashboard` — counts by status, total pipeline value, and count with an open protest.** | **Covered.** `GET /dashboard` returns the required status counts, total pipeline value, and open-protest count. |
+| **Dashboard must query the real database, not aggregate in memory.** | **Covered.** Dashboard aggregation is performed against PostgreSQL rather than by loading the request dataset and aggregating it in application memory. |
+| **Brief API contract decision in README or inline comments.** | **Covered.** The project documentation explains the deliberately small API surface and why undefined approval-lifecycle operations were not invented. |
+| **`POST /assist/query` accepts free text, uses an LLM to create a structured filter, validates it, queries the database, and returns matches.** | **Covered.** Sections 8 and 10 describe `/assist/query` and the full natural-language → LLM → structured candidate filter → application validation → validated database query → matching requests boundary. |
+| **LLM output must be validated before touching the database.** | **Covered explicitly.** Section 10 states that unknown fields, unsupported structures, malformed output, and other out-of-schema responses are rejected rather than passed through to SQL. |
+| **Hallucinated or out-of-schema fields must be caught rather than silently accepted.** | **Covered explicitly.** Section 10 identifies unknown/out-of-schema model output as invalid and keeps the LLM outside the application authority boundary. |
+| **Visible fallback for low-confidence or malformed model output.** | **Covered.** Section 10 states that low-confidence or malformed AI behavior is surfaced visibly rather than presented as authoritative. |
+| **LLM/API unavailable behavior.** | **Covered without inventing resilience requirements.** Section 10 states that if the provider is unavailable, AI-assisted search is treated as unavailable and the user receives a clear indication that the operation could not be completed. It deliberately does not claim retries, provider failover, or other mechanisms because those are not required by the challenge. |
+| **Prompt(s) checked into the repository.** | **Covered.** The LLM prompt is defined directly in the TypeScript AI-provider implementation and is therefore checked into the repository with the application source rather than maintained as a separate prompt file. |
+| **README states LLM provider and exactly where reviewer substitutes API key.** | **Covered.** The README identifies OpenAI as the configured LLM provider and documents `OPENAI_API_KEY` in the backend `.env` configuration as the reviewer-supplied API key. |
+| **LLM integration should be cleanly separated so providers could be swapped without rewriting the endpoint.** | **Covered.** Provider-specific LLM interaction is isolated behind the AI provider/service boundary, while the endpoint remains responsible for the application contract rather than provider-specific behavior. |
+| **React frontend.** | **Covered by explicit implementation choice.** Section 1 states React. |
+| **One meaningful acquisition-pipeline screen connected to real APIs.** | **Covered.** Section 13 states that the frontend is centered on one meaningful contracting-officer workflow and uses real API calls throughout. |
+| **Requests grouped or filterable by status.** | **Covered.** Section 13 explicitly states pipeline visibility and status grouping/filtering. |
+| **Each request shows title, priority, budget ceiling, and current status.** | **Covered.** The acquisition pipeline renders the required title, priority, budget ceiling, and current status for each request. |
+| **Request detail shows description.** | **Covered.** Request detail renders the acquisition-request description. |
+| **Request detail shows approval-chain stages including parallel groupings and decisions.** | **Covered.** Sections 4 and 13 explicitly describe approval decisions and parallel approval groupings in request detail. |
+| **Request detail shows associated contract or protest information.** | **Covered.** Sections 12 and 13 explicitly identify contract/protest context in request detail. |
+| **Contracting officer can advance request status and the operation writes back to the API.** | **Covered.** Section 13 states status advancement uses real API calls and successful updates are reflected back into the UI. Section 8 identifies `PATCH /requests/:id/status`. |
+| **Search bar sends natural-language query to `/assist/query`.** | **Covered.** Sections 10 and 13 describe natural-language assisted search through the AI endpoint. |
+| **UI visibly distinguishes confident AI results from low-confidence/fallback behavior.** | **Covered.** Section 10 states uncertainty is surfaced visibly; Section 13 includes natural-language assisted search as part of the real frontend workflow. |
+| **Visible loading state.** | **Covered.** Section 13 states loading conditions are represented explicitly. |
+| **Visible API error state.** | **Covered.** Section 13 states error conditions are represented explicitly. |
+| **At least one write action updates the UI after calling the API.** | **Covered.** Section 13 states successful status updates are reflected back into the UI without requiring a page reload. |
+| **Frontend component structure must be navigable rather than everything being in one file.** | **Covered.** The React frontend is decomposed into focused components for the acquisition pipeline, request detail, request creation, AI-assisted search, modal presentation, and shared error handling rather than concentrating the application in a single component file. |
+| **Authentication should be skipped; use hardcoded user ID or query parameter for current user.** | **Covered exactly within supplied scope.** Section 9 uses `/acquireiq/?user=3`, reads the value into application-level UI state, and deliberately does not infer authentication, authorization, ownership, approval authority, visibility, or status permissions that the challenge does not define. |
+| **Deployment can be local-only.** | **No additional deployment architecture is assumed.** The design does not invent a production deployment requirement. Setup/deployment instructions belong in the README. |
+| **CSS perfection is not required.** | **No additional requirement introduced.** The design focuses on functional workflow rather than treating visual polish as a mandated deliverable. |
+| **Prompt-engineering polish is not required.** | **No additional requirement introduced.** Section 10 focuses on validation, trust boundaries, fallback behavior, and reliability rather than unsupported prompt sophistication. |
+| **Lead Design Note: modeling decision — most important schema tradeoff and why.** | **Covered.** Section 11 explains the parallel-approval representation and the decision not to introduce `current_stage` without authoritative lifecycle rules. |
+| **Lead Design Note: API contract — one thing you would change with more time and specifically what you would change it to.** | **Covered.** Section 8 states that, after approval lifecycle clarification, the API would gain an explicit operation representing that clarified approval lifecycle. The endpoint semantics are intentionally not invented before the business contract is known. |
+| **Lead Design Note: AI reliability — model hallucination or API unavailable.** | **Covered.** Section 10 covers both invalid/hallucinated model output and provider unavailability. |
+| **Lead Design Note: AI reliability — how real-world reliability would actually be measured in production.** | **Covered.** Section 10 proposes structured observability, evaluation datasets from real acquisition queries, model/version tracking, and monitoring validation failures and fallback rates. |
+| **Lead Design Note: one scale concern at 10× data volume or request rate and proposed fix.** | **Covered directly.** Section 14 selects the current unbounded `GET /requests` as the concern and proposes server-side pagination while keeping filtering and sorting server-side. This is a concrete current-design issue and does not require assuming a particular future infrastructure architecture. |
+| **Lead Design Note: consideration of other possible scale issues must not become unsupported architecture claims.** | **Covered appropriately.** Section 14 identifies database performance/contention, LLM-provider limits, and infrastructure as plausible concerns dependent on actual workload, then states they would be measured before prescribing architectural changes. |
+| **Lead Design Note: single feature or improvement that would make the system most valuable to a real contracting office.** | **Covered.** Section 15 explicitly identifies one improvement: complete and validate the approval workflow with contracting-office users and acquisition-domain SMEs, then implement that clarified lifecycle. |
+| **Design should show what was knowingly deferred.** | **Covered.** Sections 3, 4, 8, 9, 12, 14, and 15 distinguish implemented requirements from unresolved business behavior, optional lifecycle work, and future production concerns. |
+| **Protest resolution endpoint is optional stretch.** | **Correctly not treated as required.** Section 12 models and exposes protest information but does not invent a complete protest filing/resolution lifecycle. |
+| **Concurrency test suite is optional stretch.** | **Covered beyond the core requirement.** AcquireIQ includes both the required concurrency verification explanation and an automated simultaneous-update concurrency test. |
+| **AI query evaluation set is optional stretch.** | **Correctly not treated as an implementation requirement.** Section 10 mentions evaluation datasets as a production reliability mechanism, not as a claim that the optional stretch eval set was implemented. |
+| **Pagination implementation is optional stretch.** | **Correctly not treated as currently required.** Section 14 proposes pagination as the future fix for the selected 10× scale concern; it does not claim pagination is currently implemented. |
+| **API versioning sketch is optional stretch.** | **Correctly not treated as required.** The current design does not invent API-versioning requirements. |
+| **README must contain exact setup commands.** | **Covered.** The README provides the database creation/schema, seed, backend, and frontend commands needed to run AcquireIQ locally. |
+| **README must justify API language choice.** | **Covered.** The README identifies Node.js with TypeScript and Express as the API implementation and explains the choice in the context of the existing TypeScript project structure, shared development model, and the intentionally small service-oriented API. |
+| **README must identify LLM provider and reviewer key location.** | **Covered.** The README identifies OpenAI as the configured LLM provider and documents `OPENAI_API_KEY` in the backend `.env` configuration as the location where the reviewer supplies the API key. |
+| **README must document key design choices/tradeoffs.** | **Covered.** The README documents the principal modeling, request-status, concurrency, AI trust-boundary, and deliberate-scope decisions. |
+| **README must document what would be changed or added with more time.** | **Covered.** The README identifies clarification and completion of the approval lifecycle as the principal future improvement. |
+| **README must document what was skipped and why.** | **Covered.** The README explicitly identifies the undefined approval-decision/stage-progression behavior and optional stretch work that were deliberately not implemented. |
+| **README must include or link the Lead Design Note.** | **Covered.** The README identifies and links `DESIGN_CONSIDERATIONS.md` as the Lead Design Note. |
+| **Lead Design Note target length is 300–500 words or equivalent structured bullets.** | **Covered as an equivalent structured artifact.** `DESIGN_CONSIDERATIONS.md` is the Lead Design Note. It uses structured sections and bullets to address the required modeling decision, API contract decision, AI reliability and production measurement, 10× scale concern, and single highest-value next improvement, while also documenting the reasoning and deliberate scope boundaries discovered during implementation. |
+
+## Explicit Design Choices Required to Implement Underspecified Technical Details
+
+The following choices are not claimed to come from the challenge. They are documented implementation decisions made because an explicit required capability cannot be implemented without selecting a technical behavior.
+
+| Required capability | Explicit AcquireIQ design choice |
+| --- | --- |
+| Fixed valid request-status transitions are required, but the challenge does not supply the complete status graph. | AcquireIQ defines `draft -> submitted`, `submitted -> in_review/rejected`, `in_review -> approved/rejected`, and `approved -> awarded`, with `awarded` and `rejected` terminal. |
+| Concurrent status updates must not corrupt state, but the challenge does not prescribe a concurrency mechanism. | AcquireIQ uses a PostgreSQL transaction with `SELECT ... FOR UPDATE` on the target request row, then validates the transition against the state read while holding the lock. |
+| The challenge permits either a hardcoded user ID or query parameter and explicitly says authentication is unnecessary. | AcquireIQ uses `/acquireiq/?user=3` and retains that value as frontend application-level current-user context without inventing authorization semantics. |
+| The LLM provider is the implementer's choice. | AcquireIQ uses an LLM provider behind a validation/trust boundary. Provider-specific implementation is separated from application authority so model output cannot directly control database behavior. |
+| The API language is the implementer's choice among Node, Python, or Go. | AcquireIQ uses Node.js with TypeScript and Express. |
+| The scale section requires one current-design concern and proposed fix, while pagination implementation itself is optional stretch. | AcquireIQ identifies unbounded `GET /requests` as the selected 10× concern and proposes server-side pagination as the future fix without claiming pagination is currently implemented. |
+
+## Business Rules Deliberately Not Invented
+
+These items are not treated as missing implementation details because the supplied challenge does not define enough business behavior to implement them without making consequential assumptions.
+
+| Unspecified business rule | AcquireIQ treatment |
+| --- | --- |
+| Mapping between approval `stage_sequence` and acquisition-request `status`. | No mapping is invented. |
+| Whether completion of an approval stage automatically changes request status. | No automatic relationship is invented. |
+| How an approver records a decision through the API. | No additional approval-decision endpoint is invented merely to fill the missing contract. |
+| Meaning of a stage containing both approved and rejected decisions. | No approval/rejection outcome rule is invented. |
+| Effect of a rejecting decision on approval-stage progression when the supplied wording only says every approver must have “recorded a decision.” | No additional rejection semantic is inferred. |
+| Who has authority to record approval decisions. | No authorization rule is invented. |
+| Whether the query-string current user controls request ownership, approval authority, data visibility, or status-transition permission. | No such behavior is inferred. |
+| Complete protest filing/resolution lifecycle. | Not implemented as core behavior; protest resolution is explicitly optional stretch. |
+| Production infrastructure topology at larger scale. | No VM/container/load-balancer/replica/cache/partitioning architecture is prescribed without workload and operational requirements. |
+
+## Verification Conclusion
+
+The current Design Considerations covers the explicit design and judgment requirements of the challenge while maintaining a clear boundary between required behavior, explicit technical design choices needed to implement required capabilities, and consequential business rules that the supplied requirements do not define.
+
+The principal explicit application design choices are the request-status transition graph, PostgreSQL row-locking strategy for concurrency, query-parameter current-user representation, API/runtime technology choices, and the selected pagination-based response to the required 10× scale question.
+
+The approval lifecycle remains deliberately bounded by the supplied requirements. AcquireIQ models parallel approvals and recognizes the explicit rule that all approvers at a current stage record a decision before stage advancement, but it does not invent the missing API operation, rejection semantics, authorization rules, or mapping between approval-stage progression and request-status progression.
+
+Repository-level requirements such as schema fields, seed data, constraints, indexes, HTTP behavior, checked-in prompts, frontend component decomposition, and README content were verified against the corresponding AcquireIQ artifacts rather than inferred solely from the Design Considerations document.

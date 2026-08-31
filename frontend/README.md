@@ -1,41 +1,139 @@
-# Generic React App Template
+# AcquireIQ Frontend
 
-Reusable frontend shell extracted from the existing React/Vite card-and-tabs pattern.
+React and Vite frontend for AcquireIQ, a government IT acquisition pipeline application.
 
-## Structure
+The frontend provides the user-facing acquisition workflow experience and communicates with the AcquireIQ backend through the centralized API client. Acquisition workflow rules and persistence remain server-owned.
 
-- `src/App.jsx` — application composition and app-level identity
-- `src/App.css` — reusable light theme and card/tab/error styling
-- `src/main.jsx` — React entry point
-- `src/api/client.js` — single frontend API boundary; includes `/api/health`
-- `src/logging/logger.js` — centralized configurable frontend logging
-- `src/components/AppHeaderCard.jsx` — generic app header card
-- `src/components/BackendHealthCard.jsx` — automatic health check + refresh
-- `src/components/MainContentCard.jsx` — generic body card
-- `src/components/GenericTabs.jsx` — two placeholder Radix tabs
-- `src/components/ErrorMessage.jsx` — reusable error/details component
+## Technology
 
-## Dependency
+- React
+- Vite
+- JavaScript
+- Radix UI tabs
+- Centralized frontend API client
+- Configurable centralized logging
 
-The tab component uses `@radix-ui/react-tabs`, matching the existing app pattern.
+## Application Features
 
-```bash
-npm install @radix-ui/react-tabs
-```
+The AcquireIQ frontend provides:
 
-## API routing
+- acquisition request creation
+- acquisition pipeline/list view
+- status and priority filtering
+- request detail
+- approval stages with parallel approver grouping
+- approval decision display
+- contract information
+- protest information
+- contracting-officer status actions
+- dashboard metrics
+- natural-language AI-assisted search
+- visibly distinct confident and fallback AI states
+- loading and human-readable error states
 
-Production can use same-origin `/api/*` routing. For local development, optionally set:
+The frontend consumes real backend APIs rather than hardcoded acquisition data.
 
-```env
-VITE_API_BASE=http://localhost:3001
-```
+## Current User
 
-The health endpoint is:
+Authentication is intentionally not implemented because the challenge explicitly permits it to be skipped.
+
+AcquireIQ supports a current-user ID through the `user` query parameter.
+
+Example:
 
 ```text
-GET /api/health
+http://localhost:5173/acquireiq/?user=<user-id>
 ```
+
+The current-user mechanism provides application context without pretending to implement authentication or authorization.
+
+## API Boundary
+
+Frontend API access is centralized in:
+
+```text
+src/api/client.js
+```
+
+For local development, configure:
+
+```env
+VITE_API_BASE=http://localhost:3002
+```
+
+The backend exposes the AcquireIQ application APIs used by the frontend, including request collection/detail/create/status operations, dashboard aggregation, AI-assisted search, and the backend health endpoint.
+
+The browser never communicates directly with PostgreSQL or the LLM provider.
+
+## Running Locally
+
+Start the AcquireIQ backend first.
+
+Then, from `frontend`:
+
+```bash
+npm install
+npm run dev
+```
+
+Open the Vite URL shown by the development server.
+
+The default local application URL is:
+
+```text
+http://localhost:5173/acquireiq/
+```
+
+A current user can be supplied with:
+
+```text
+http://localhost:5173/acquireiq/?user=<user-id>
+```
+
+## AI-Assisted Search
+
+The AI search interface sends natural-language acquisition queries to:
+
+```text
+POST /assist/query
+```
+
+The frontend does not execute or interpret model-generated SQL.
+
+The backend converts the natural-language request into a structured filter, validates the LLM output, maps validated values to server-owned parameterized SQL, and returns the resulting matches.
+
+The frontend visibly distinguishes a normal confident interpretation from the backend's explicit fallback/low-confidence state.
+
+## Request Detail
+
+Request detail displays the acquisition information returned by the backend, including:
+
+- description
+- approval stages
+- multiple approvers grouped within the same parallel stage
+- individual approval decisions
+- associated contract information when present
+- protest information when present
+
+Parallel grouping is a representation and display concern. The frontend does not invent approval-stage advancement rules that are not defined by the challenge.
+
+## Status Updates
+
+Contracting-officer status actions call the backend status-transition API.
+
+Valid transition rules are owned by the backend rather than duplicated as authoritative business logic in the browser. Successful writes refresh the displayed application state, while rejected transitions are surfaced to the user.
+
+## Dashboard
+
+The dashboard consumes backend aggregation results rather than calculating authoritative pipeline metrics from frontend request data.
+
+The backend provides counts by status, total pipeline value, and the count of requests with an open protest.
+
+## Loading and Error Handling
+
+Live API operations expose user-visible loading and error behavior.
+
+User-facing errors remain separate from diagnostic logging so failures can be communicated clearly without requiring users to inspect the browser console.
 
 ## Logging
 
@@ -53,43 +151,43 @@ summary
 verbose
 ```
 
-Logging defaults to `none`. If `VITE_LOG_LEVEL` is missing or invalid, no application logging is produced.
+Logging defaults to `none`.
 
-Configure the level in the frontend Vite environment:
+Configure the level through:
 
 ```env
 VITE_LOG_LEVEL=none
 ```
 
-To enable summary logging:
+`summary` enables important application-event logging. `verbose` adds additional diagnostic information.
+
+Frontend modules should use the centralized logger rather than scattering direct `console.log()` and `console.error()` calls throughout components and API code.
+
+## Frontend Environment Variables
+
+Example local configuration:
 
 ```env
-VITE_LOG_LEVEL=summary
+VITE_API_BASE=http://localhost:3002
+VITE_LOG_LEVEL=none
 ```
 
-To enable verbose diagnostic logging:
+Because Vite exposes `VITE_*` environment variables to browser code, passwords, database credentials, LLM API keys, access tokens, and other secrets must never be stored in `VITE_*` variables.
 
-```env
-VITE_LOG_LEVEL=verbose
-```
+The OpenAI API key belongs exclusively to the backend configuration.
 
-The logger exports:
+## Design Boundary
 
-```javascript
-logSummary()
-logVerbose()
-logError()
-```
+The frontend is responsible for presentation, user interaction, API invocation, and clearly communicating application state.
 
-- `logSummary()` writes important application events when the level is `summary` or `verbose`.
-- `logVerbose()` writes additional diagnostic information only when the level is `verbose`.
-- `logError()` writes diagnostic errors when the level is `summary` or `verbose`.
+The backend remains authoritative for:
 
-Frontend modules should use the centralized logger instead of scattering direct `console.log()` and `console.error()` calls throughout components and API code.
+- request validation
+- status-transition rules
+- concurrency safety
+- PostgreSQL persistence
+- dashboard aggregation
+- AI structured-filter validation
+- parameterized database queries
 
-The API client is a natural place to log request results or diagnostics when needed.
-
-Logging and user-facing error handling remain separate concerns. `ErrorMessage.jsx` displays errors to the user; `logger.js` provides diagnostic output.
-
-Because Vite exposes `VITE_*` environment variables to browser code, never store passwords, API keys, access tokens, or other secrets in `VITE_*` variables.
-
+This separation prevents UI behavior from becoming the authoritative implementation of acquisition business rules.
