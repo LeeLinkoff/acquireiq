@@ -1,3 +1,5 @@
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faCircleCheck, faCircleXmark } from '@fortawesome/free-solid-svg-icons'
 import React, { useCallback, useEffect, useState } from 'react'
 import { getHealth } from '../api/client.js'
 import Message from './Message.jsx'
@@ -35,7 +37,45 @@ export default function BackendHealthCard() {
       <div className="card-heading-row">
         <div>
           <div className="app-eyebrow">SYSTEM</div>
+
           <h2 id="backend-health-title">Backend Health</h2>
+
+	{!loading && (
+	  <div
+		className={`health-status ${
+		  error || !health?.ok ? 'is-unhealthy' : 'is-healthy'
+		}`}
+	  >
+		<div className="health-status-content">
+
+		  <div className="health-status-heading">
+			<FontAwesomeIcon
+			  icon={error || !health?.ok ? faCircleXmark : faCircleCheck}
+			  className={`health-status-icon ${
+				error || !health?.ok ? 'is-error' : 'is-success'
+			  }`}
+			  aria-hidden="true"
+			/>
+
+			<strong>
+			  { error ? 'Backend unavailable' : health?.ok ? 'Backend connected' : health ? 'Backend health problem' : 'Backend status unavailable'}
+			</strong>
+		  </div>
+
+		  <span>
+			{error
+			  ? 'The AcquireIQ backend could not be reached. Verify that the backend server is running.'
+			  : health?.ok
+				? 'The API health check completed successfully.'
+				: health
+				  ? 'The backend responded, but its health check reported a problem.'
+				  : 'No backend health information is available.'}
+		  </span>
+
+		</div>
+	  </div>
+	)}
+
         </div>
 
 		<div className="card-actions">
@@ -44,23 +84,18 @@ export default function BackendHealthCard() {
 		</div>
       </div>
 
-      {!loading && !error && (
-        <div className={`health-status ${healthy ? 'is-healthy' : 'is-unhealthy'}`}>
-          <span className="status-dot" aria-hidden="true" />
-          <div>
-            <strong>{healthy ? 'Backend connected' : 'Backend responded with a problem'}</strong>
-            <span>{healthy ? 'The API health check completed successfully.' : 'The API is reachable, but health is not OK.'}</span>
-          </div>
-        </div>
-      )}
-
-      {error && (
-       <Message type="error"
-				message="The backend health check failed."
-				details={{message: error.message, status: error.status, response: error.details }}
-				onClose={() => setError(null)}
-		/>
-      )}
+     {error && (
+	  <Message type="error"
+			   title="Backend unavailable"
+			   message="Unable to reach the AcquireIQ API. Verify that the backend service is running."
+			   details={{
+				  message: error.message,
+				  status: error.status,
+				  response: error.details
+			   }}
+			   onClose={() => setError(null)}
+	  />
+	 )}
 	  
 	  {showDetails && health && (
 		  <Message

@@ -11,7 +11,9 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import { getRequestById, updateRequestStatus } from '../api/client.js'
+
+import { getRequestById, updateRequestStatus, updateApprovalDecision } from '../api/client.js'
+
 import Message from './Message.jsx'
 import ApprovalStage from './ApprovalStage.jsx'
 import { logVerbose, logError } from '../logging/logger.js'
@@ -59,6 +61,14 @@ export default function RequestDetail({ requestId, onRequestUpdated })
   // rejects a transition, such as an invalid request-status transition.
   const [statusError, setStatusError] = useState(null)
 
+  // Tracks the individual approval currently being updated so approval actions
+  // cannot be submitted repeatedly while the backend request is in progress.
+  const [updatingApprovalId, setUpdatingApprovalId] = useState(null)
+
+  // Stores approval-decision failures separately so the existing request detail
+  // remains visible when the backend rejects an approval update.
+  const [approvalError, setApprovalError] = useState(null)
+  
   useEffect(() => {
     // Prevent an older asynchronous request from updating this component after
     // the user closes the detail or React has already cleaned up this effect.
@@ -150,6 +160,47 @@ export default function RequestDetail({ requestId, onRequestUpdated })
     finally
     {
       setUpdatingStatus(false)
+    }
+  }
+
+    /*
+   * Records one individual approval decision and then reloads the complete
+   * request detail from the backend.
+   *
+   * PostgreSQL owns the authoritative approval data and derives approval-stage
+   * state from those records. Reloading the request therefore gives the frontend
+   * the newly derived stageState values without duplicating workflow logic in
+   * React.
+   */
+  async function handleApprovalDecision(approvalId, decision, notes = null)
+  {
+    setUpdatingApprovalId(approvalId)
+    setApprovalError(null)
+
+    try
+    {
+      await updateApprovalDecision(requestId, approvalId, decision, notes)
+
+      // Reload the complete request because the approval decision may cause
+      // PostgreSQL to derive different states for multiple approval stages.
+      const updatedRequest = await getRequestById(requestId)
+      setRequest(updatedRequest)
+
+      logVerbose('Acquisition approval decision updated', {
+        requestId,
+        approvalId,
+        decision,
+        result: updatedRequest,
+      })
+    }
+    catch (err)
+    {
+      setApprovalError(err)
+      logError('Acquisition approval decision update failed', err)
+    }
+    finally
+    {
+      setUpdatingApprovalId(null)
     }
   }
 
@@ -258,19 +309,71 @@ export default function RequestDetail({ requestId, onRequestUpdated })
 	    />
 	  )}
 
+	 {/* Display approval-decision failures while leaving the request detail visible. */}
+	 {approvalError && 
+	 (
+		  <Message type="error"
+				   title="Approval Decision Blocked"
+				   message={approvalError.details?.error ?? approvalError.message}
+				   onClose={() => setApprovalError(null)}
+		  />
+	  )}
+
       <h4>Approval Chain</h4>
 
       {approvalStages.size > 0 ? (
         <div className="approval-stages">
           {[...approvalStages.entries()]
-            // Sort by the numeric stage sequence so the approval chain is
-            // displayed in the same order that the workflow executes.
+            // Sort by the numeric stage sequence so the approval chain is displayed in the same order that the workflow executes.
             .sort(([stageA], [stageB]) => stageA - stageB)
-            .map(([stageSequence, approvals]) => (
-              <ApprovalStage
-                key={stageSequence}
-                approvals={approvals}
-              />
+			/*
+			 * Generate an ApprovalStage React component for each approval stage in approvalStages array.
+			 *
+			 * Each Map entry has the form [stageSequence, approvals].
+			 * Take each entry from approvalStages array and turn it into one visual <ApprovalStage /> React component.
+			 *
+			 * stageSequence is the key originally created from approval.stageSequence when
+			 * approvalStages was built above. It identifies this workflow stage and is
+			 * passed to React as key={stageSequence}.
+			 *
+			 * approvals is the array of individual approval records grouped into that
+			 * stage and is passed to ApprovalStage as approvals={approvals}.
+			 *
+			 * React consumes key internally; key is NOT passed to ApprovalStage as a prop.
+			 */
+			.map(([stageSequence, approvals]) => (
+			/*
+			 * Pass the data and behavior needed by each ApprovalStage React component.
+			 *
+			 * Value props:
+			 *   approvals -> The array of approval records belonging to this stage.
+			 *   updatingApprovalId -> The ID of the approval currently being updated, or null when no approval update is in progress.
+			 *
+			 * Function prop:
+			 *   onApprovalDecision
+			 *     A reference to RequestDetail's handleApprovalDecision function. The
+			 *     function is not executed when it is passed. ApprovalStage can call this
+			 *     function later when the user chooses an approval decision.
+			 *
+			 * This allows ApprovalStage to display stage data and initiate an approval
+			 * decision while RequestDetail remains responsible for performing the API
+			 * operation and refreshing the authoritative request data.
+			 *
+			 * React's special key attribute used to identify an element within a dynamically rendered list.
+			 * Its different from the approvals, onApprovalDecision, updatingApprovalId normal React props.
+			 *
+			 * React requires a stable key for each component in a dynamically rendered list. 
+			 * The key uniquely identifies this ApprovalStage across re-renders so React can correctly track which stage was added, removed, changed, or reordered. 
+			 * stageSequence is used because it uniquely identifies each approval stage.
+			 *
+			 * The key is used internally by React and is not passed to ApprovalStage as a prop.
+			*/
+			<ApprovalStage
+			  key={stageSequence}       // Use the stage sequence as React's unique key for this rendered ApprovalStage component in the collection 
+			  approvals={approvals}
+			  onApprovalDecision={handleApprovalDecision}
+			  updatingApprovalId={updatingApprovalId}
+			/>
             ))}
         </div>
       ) : (

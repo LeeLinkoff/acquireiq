@@ -133,6 +133,27 @@ export function updateRequestStatus(id, status)
 }
 
 /*
+ * Records one individual approver's decision for an acquisition request.
+ *
+ * The frontend supplies only the decision and optional notes for the specified
+ * approval. PostgreSQL owns the authoritative approval data and derives
+ * approval-stage progression and stage state from those records; the frontend
+ * does not calculate or submit approval-stage state.
+ *
+ * On success the API returns the updated individual approval.
+ */
+export function updateApprovalDecision(requestId, approvalId, decision, notes = null)
+{
+  return request(`/requests/${requestId}/approvals/${approvalId}/decision`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      decision,
+      notes,
+    }),
+  })
+}
+
+/*
  * Retrieves the aggregated acquisition pipeline metrics displayed
  * by the dashboard.
  */

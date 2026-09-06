@@ -21,7 +21,7 @@
 }
 
 .modal-dialog.modal-large {
-  width: 95vw;
+  width: clamp(1000px, 60vw, 1200px);
   max-width: 1400px;
   height: auto;
   max-height: 92vh;

@@ -238,10 +238,7 @@ export default function AcquisitionPipeline()
 		  <label className="pipeline-filter">
 			<span>Priority</span>
 
-			<select
-			  value={selectedPriority}
-			  onChange={(event) => setSelectedPriority(event.target.value)}
-			>
+			<select value={selectedPriority}  onChange={(event) => setSelectedPriority(event.target.value)}	>
 			  <option value="all">All Priorities</option>
 			  <option value="low">Low</option>
 			  <option value="medium">Medium</option>

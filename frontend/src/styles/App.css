@@ -277,6 +277,31 @@ button:disabled { cursor: default; opacity: 0.65; }
   font-weight: 700;
 }
 
+.health-status-icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+}
+
+.health-status-icon.is-success {
+  color: #15803d;
+}
+
+.health-status-icon.is-error {
+  color: #dc2626;
+}
+
+.health-status-heading {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.health-status-heading strong {
+  margin: 0;
+}
+
 
 @media (max-width: 640px) {
   .app-shell { width: min(100% - 20px, 1040px); padding-top: 18px; }

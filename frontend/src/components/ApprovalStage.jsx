@@ -9,11 +9,43 @@
 import React from 'react'
 
 
-export default function ApprovalStage({ approvals })
+/*
+ * Props received from RequestDetail:
+ *
+ * Value props:
+ *   approvals
+ *     Array of approval records belonging to this stage.
+ *
+ *   updatingApprovalId
+ *     ID of the approval currently being updated, or null when no approval
+ *     decision is being submitted.
+ *
+ * Function prop:
+ *   onApprovalDecision
+ *     Reference to RequestDetail's handleApprovalDecision function.
+ *     Passing the function as a prop does not execute it. ApprovalStage calls
+ *     it later when the user chooses Approve or Reject.
+ *
+ * Props are properties of a single object, so they are matched by name rather
+ * than by their order in this function signature.
+ */
+export default function ApprovalStage({ approvals, onApprovalDecision, updatingApprovalId })
 {
   // Every approval in this group has the same stage sequence. The first record
   // therefore provides the stage name and sequence used for the group heading.
   const stage = approvals[0]
+  
+  /*
+   * Approval-stage state is derived by PostgreSQL from the authoritative
+   * approval records and returned through the API. The frontend does not
+   * determine whether a stage is complete, current, or future; it only
+   * displays the state supplied by the backend.
+   *
+   * All approvals in the same stage receive the same PostgreSQL-derived
+   * stageState, so the first approval can supply the state for the stage
+   * represented by this component.
+  */
+  const stageState = stage.stageState
 
   return (
     <div className="approval-stage">
@@ -21,11 +53,13 @@ export default function ApprovalStage({ approvals })
         <strong>
           Stage {stage.stageSequence} — {stage.stageName}
         </strong>
-
-        <div className="approval-stage-summary">
-           {approvals.length} {approvals.length === 1 ? 'approver' : 'approvers'}
-           {approvals.length > 1 && ' · Parallel approval'}
-        </div>
+		<span className={`approval-stage-state approval-stage-state-${stageState}`}>
+			{stageState.toUpperCase()}
+		</span>
+		<div className="approval-stage-summary">
+			 {approvals.length} {approvals.length === 1 ? 'approver' : 'approvers'}
+			 {approvals.length > 1 && ' · Parallel approval'}
+		</div>
       </div>
 
       <div className="approval-list">
@@ -44,6 +78,28 @@ export default function ApprovalStage({ approvals })
                   : 'Pending'}
               </strong>
             </div>
+
+			{approval.decision === 'pending' && stageState === 'current' && (
+			  <div className="approval-actions">
+				<button
+				  type="button"
+				  className="btn-primary"
+				  disabled={updatingApprovalId === approval.id}
+				  onClick={() => onApprovalDecision(approval.id, 'approved')} //onApprovalDecision is a prop containing a reference to the handleApprovalDecision function passed from RequestDetail
+				>
+				  { (updatingApprovalId === approval.id) ? 'Updating...' : 'Approve'}
+				</button>
+
+				<button
+				  type="button"
+				  className="btn-secondary"
+				  disabled={updatingApprovalId === approval.id}
+				  onClick={() => onApprovalDecision(approval.id, 'rejected')}  //onApprovalDecision is a prop containing a reference to the handleApprovalDecision function passed from RequestDetail
+				>
+				  { (updatingApprovalId === approval.id) ? 'Updating...' : 'Reject'}
+				</button>
+			  </div>
+			)}
 
             {approval.notes && (
               <div>
