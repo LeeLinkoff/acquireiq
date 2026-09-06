@@ -2,6 +2,7 @@
 import { pool } from "../db/pool.js";
 import type { ValidatedAssistFilter } from "./ai/types.js";
 
+
 /**
  * API-facing representation of an acquisition request.
  * Database column names are mapped to camelCase at the SQL boundary so the
@@ -23,6 +24,7 @@ export interface AcquisitionRequest
   createdAt: Date;
 }
 
+
 /**
  * One approval record in an acquisition request's approval chain.
  *
@@ -36,12 +38,22 @@ export interface AcquisitionApproval {
   approverName: string;
   stageName: string;
   stageSequence: number;
+  /*
+   * Authoritative approval-stage state derived by PostgreSQL from the
+   * acquisition request's approval records.
+   *
+   * This value is not stored as separate stage state and is not derived by
+   * Node or React. PostgreSQL returns complete, current, or future according
+   * to the approval-stage workflow represented by the authoritative approval
+   * records.
+  */
+  stageState: "complete" | "current" | "future";
   decision: string | null;
   decidedAt: Date | null;
   notes: string | null;
 }
 
-/*
+/**
  * Client payload for recording an individual approver's decision.
  *
  * The approval row already determines the acquisition request, approver,
@@ -97,11 +109,16 @@ export interface AcquisitionProtest {
  * @openapi
  */
 export interface AcquisitionRequestDetail extends AcquisitionRequest {
+  /*
+   * Current approval stage derived from the approval records by PostgreSQL.
+   * null means no pending approval stage remains and the approval workflow
+   * is complete.
+   */
+  currentApprovalStageSequence: number | null;
   approvals: AcquisitionApproval[];
   contract: AcquisitionContract | null;
   protests: AcquisitionProtest[];
 }
-
 
 /**
  * Supported filters for acquisition-request searches.
@@ -128,7 +145,6 @@ export interface CreateAcquisitionRequest {
   fiscalYear: number;
 }
 
-
 /**
  * Client payload for requesting a workflow status transition.
  *
@@ -138,8 +154,59 @@ export interface UpdateAcquisitionRequestStatus {
   status: "draft" | "submitted" | "in_review" | "approved" | "awarded" | "rejected";
 }
 
+/**
+ * Aggregate values returned by the acquisition dashboard endpoint.
+ *
+ * @openapi
+ */
+export interface DashboardSummary {
+  countsByStatus: {
+    draft: number;
+    submitted: number;
+    in_review: number;
+    approved: number;
+    awarded: number;
+    rejected: number;
+  };
+  totalPipelineValue: string;
+  openProtestCount: number;
+}
+
+
 export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
 
+/*
+ * Describes every possible result of attempting to record an individual approval decision.
+ *
+ * The approval operation is separate from both acquisition-request status
+ * and derived approval-stage progression. It records a decision only for the
+ * specified approval belonging to the specified acquisition request.
+ *
+ * Possible outcomes:
+ *
+ *   updated
+ *     The individual approval decision was recorded successfully.
+ *
+ *   request_not_found
+ *     The acquisition request associated with the operation does not exist.
+ *
+ *   approval_not_found
+ *     The specified approval does not exist for the acquisition request.
+ *
+ *   already_decided
+ *     The approval already contains a recorded decision and cannot be decided again by this operation.
+ *
+ * A type alias is used because the operation can return one of several distinct result object shapes.
+ */
+export type ApprovalDecisionResult =
+  | {
+      outcome: "updated";
+      approval: AcquisitionApproval;
+    }
+  | { outcome: "request_not_found" }
+  | { outcome: "approval_not_found" }
+  | { outcome: "already_decided" };
+  
 /*
  * Describes every possible result of attempting to move an acquisition request
  * through the workflow state machine.
@@ -147,6 +214,8 @@ export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
  * A transition either succeeds, fails because the request does not exist,
  * or is rejected because the requested transition is not allowed by the
  * AcquireIQ request status state machine.
+ *
+ * A type alias is used because the operation can return one of several distinct result object shapes.
  */
 export type StatusTransitionResult =
   | { outcome: "updated"; request: AcquisitionRequest }
@@ -157,8 +226,11 @@ export type StatusTransitionResult =
       requestedStatus: AcquisitionRequestStatus;
     };
 
+
 /**
  * Acquisition-request workflow state machine.
+ *
+ * In TypeScript terms, this uses the Record and Readonly utility types to define a strongly typed object whose keys and values are constrained to specified types. Used here as a map.
  *
  * PLAIN-ENGLISH EXPLANATION:
  *
@@ -215,8 +287,7 @@ export type StatusTransitionResult =
  * machine. The transition table defines the legal workflow paths, while
  * updateRequestStatus() validates and applies the requested transition.
  */
-const VALID_STATUS_TRANSITIONS: Readonly<
-  Record<AcquisitionRequestStatus, readonly AcquisitionRequestStatus[]>
+const VALID_STATUS_TRANSITIONS: Readonly<Record<AcquisitionRequestStatus, readonly AcquisitionRequestStatus[]>
 > = {
   draft: ["submitted"],
   submitted: ["in_review", "rejected"],
@@ -225,25 +296,6 @@ const VALID_STATUS_TRANSITIONS: Readonly<
   awarded: [],
   rejected: []
 };
-
-
-/**
- * Aggregate values returned by the acquisition dashboard endpoint.
- *
- * @openapi
- */
-export interface DashboardSummary {
-  countsByStatus: {
-    draft: number;
-    submitted: number;
-    in_review: number;
-    approved: number;
-    awarded: number;
-    rejected: number;
-  };
-  totalPipelineValue: string;
-  openProtestCount: number;
-}
 
 
 /**
@@ -296,7 +348,6 @@ export async function getRequests(
 
   return result.rows as AcquisitionRequest[];
 }
-
 
 /**
  * Loads the base API representation of one acquisition request.
@@ -364,17 +415,23 @@ export async function getRequestById(
   }
 
   /*
-   * The request now definitely exists, so its independent related datasets
-   * can be retrieved concurrently.
+   * The request now definitely exists, so its independent related datasets can be retrieved concurrently.
    *
-   * Every query remains parameterized. The request ID is always supplied as
-   * a PostgreSQL bind value ($1), never interpolated into SQL text.
+   * Every query remains parameterized. The request ID is always supplied as a PostgreSQL bind value ($1), never interpolated into SQL text.
    */
   const [
+    currentApprovalStageResult,
     approvalsResult,
     contractResult,
     protestsResult
   ] = await Promise.all([
+	  pool.query<{ currentApprovalStageSequence: number | null }>(
+	  `
+		SELECT get_current_approval_stage_sequence($1)
+		  AS "currentApprovalStageSequence"
+	  `,
+	  [id]
+	),
     pool.query<AcquisitionApproval>(
       `
         SELECT
@@ -383,6 +440,13 @@ export async function getRequestById(
           u.name AS "approverName",
           a.stage_name AS "stageName",
           a.stage_sequence AS "stageSequence",
+		  /*
+		   * PostgreSQL is the authoritative source for approval-stage state.
+		   * The function derives complete/current/future directly from the
+		   * acquisition request's authoritative approval records. Node returns
+		   * that derived value without independently determining stage state.
+		  */
+		  public.get_approval_stage_state(a.acquisition_request_id,a.stage_sequence) AS "stageState",
           a.decision,
           a.decided_at AS "decidedAt",
           a.notes
@@ -435,22 +499,48 @@ export async function getRequestById(
     )
   ]);
 
-  /*
-   * The detail contract is intentionally explicit:
-   *
-   * approvals -> [] when no approval records exist
-   * contract  -> null when no contract exists
-   * protests  -> [] when no protests exist
-   *
-   * This avoids omitted/undefined fields and gives the frontend a stable
-   * response shape.
+   /*
+    * The detail response includes:
+    *
+    * currentApprovalStageSequence -> lowest stage containing one or more pending
+    *                                 individual approvals; null when no approvals
+    *                                 are pending
+    * approvals                    -> ordered individual approval records, each
+    *                                 containing its PostgreSQL-derived stageState
+    * contract                     -> null when no contract exists
+    * protests                     -> [] when no protests exist
+    *
+    * Request status and approval-stage progression are separate.
+    *
+    * PostgreSQL is the authoritative source for approval-stage progression.
+    * Approval records contain the underlying workflow data, and PostgreSQL derives
+    * both currentApprovalStageSequence and each approval's stageState from those
+    * authoritative records.
+    *
+    * stageState is not stored separately. PostgreSQL derives it as:
+    *
+    *   complete -> the stage precedes the current stage, or no pending stage remains
+    *   current  -> the stage is the lowest stage containing a pending approval
+    *   future   -> the stage follows the current stage
+    *
+    * Multiple approvals may belong to the same stage and therefore receive the
+    * same derived stageState. Multiple earlier stages may simultaneously be
+    * complete.
+    *
+    * Node does not independently determine approval-stage state. It exposes the
+    * values derived by PostgreSQL so API consumers, including the frontend, do
+    * not need to reproduce approval-stage workflow rules.
+    *
+    * This keeps the approval data and its authoritative workflow interpretation
+    * at the database boundary while providing the frontend a stable response shape.
    */
-  return {
-    ...request,
-    approvals: approvalsResult.rows,
-    contract: contractResult.rows[0] ?? null,
-    protests: protestsResult.rows
-  };
+   return {
+	  ...request,
+	  currentApprovalStageSequence: currentApprovalStageResult.rows[0].currentApprovalStageSequence,
+	  approvals: approvalsResult.rows,
+	  contract: contractResult.rows[0] ?? null,
+	  protests: protestsResult.rows
+   };
 }
 
 /**
@@ -661,6 +751,100 @@ export async function updateRequestStatus(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Records one individual approver's decision.
+ *
+ * This operation is independent of acquisition-request status and derived
+ * approval-stage progression. It updates only the specified approval belonging
+ * to the specified acquisition request.
+ *
+ * Only a pending approval may be changed to approved or rejected. The approval
+ * remains associated with its original stage so stage state can be derived
+ * separately from the authoritative approval records.
+ */
+export async function updateApprovalDecision(requestId: number, approvalId: number, input: UpdateAcquisitionApproval ): Promise<ApprovalDecisionResult>
+{
+  /*
+   * Update only the specified pending approval.
+   *
+   * The decision condition is part of the UPDATE itself so PostgreSQL
+   * atomically prevents an already-decided approval from being changed.
+   */
+  const updatedResult = await pool.query<AcquisitionApproval>(
+    `
+      WITH updated AS (
+        UPDATE approvals
+        SET
+          decision = $3,
+          decided_at = CURRENT_TIMESTAMP,
+          notes = $4
+        WHERE id = $1
+          AND acquisition_request_id = $2
+          AND decision = 'pending'
+        RETURNING
+          id,
+          approver_id AS "approverId",
+          stage_name AS "stageName",
+          stage_sequence AS "stageSequence",
+          decision,
+          decided_at AS "decidedAt",
+          notes
+      )
+      SELECT
+        updated.id,
+        updated."approverId",
+        u.name AS "approverName",
+        updated."stageName",
+        updated."stageSequence",
+        updated.decision,
+        updated."decidedAt",
+        updated.notes
+      FROM updated
+      JOIN users u
+        ON u.id = updated."approverId"
+    `,
+    [approvalId, requestId, input.decision, input.notes ?? null]
+  );
+
+  /*
+   * A zero-row update means either the request/approval does not exist or
+   * the approval is no longer pending. Determine which result applies.
+   */
+  if (updatedResult.rowCount === 0) {
+    const requestResult = await pool.query(
+      `
+        SELECT 1
+        FROM acquisition_requests
+        WHERE id = $1
+      `,
+      [requestId]
+    );
+
+    if (requestResult.rowCount === 0) 
+	{
+      return { outcome: "request_not_found" };
+    }
+
+    const approvalResult = await pool.query(
+      `
+        SELECT decision
+        FROM approvals
+        WHERE id = $1
+          AND acquisition_request_id = $2
+      `,
+      [approvalId, requestId]
+    );
+
+    if (approvalResult.rowCount === 0) {
+      return { outcome: "approval_not_found" };
+    }
+
+    return { outcome: "already_decided" };
+  }
+
+  return { outcome: "updated", approval: updatedResult.rows[0] };
 }
 
 /**

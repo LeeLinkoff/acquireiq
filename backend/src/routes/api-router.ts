@@ -40,6 +40,10 @@
 import { Router } from "express";
 import swaggerUi from "swagger-ui-express";
 
+/*
+ * This project uses TypeScript with NodeNext/ESM. Local imports intentionally use .js extensions even though the source files are .ts.
+ * TypeScript resolves them to the corresponding .ts source during development and preserves the .js paths for the compiled files that Node executes from dist/.
+*/
 import swaggerSpec from "../swagger-spec.js";
 
 

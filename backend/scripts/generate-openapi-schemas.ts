@@ -70,11 +70,9 @@ function findTypeScriptFiles(directory: string): string[] {
 }
 
 /**
- * Determines whether a declaration's immediately preceding JSDoc comment
- * explicitly marks the type as part of the OpenAPI contract.
+ * Determines whether a declaration has a leading JSDoc comment that explicitly marks the type as part of the OpenAPI contract.
  *
- * The source text is inspected directly instead of relying on TypeScript's
- * JSDoc-tag interpretation, which is intended primarily for recognized
+ * The source text is inspected directly instead of relying on TypeScript's JSDoc-tag interpretation, which is intended primarily for recognized
  * TypeScript/JSDoc tags and is not required for this custom marker.
  */
 function hasOpenApiTag(declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclaration, sourceFile: ts.SourceFile): boolean 
@@ -87,10 +85,16 @@ function hasOpenApiTag(declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclar
     return false;
   }
 
-  const lastComment = commentRanges[commentRanges.length - 1];
-  const commentText = fullText.slice(lastComment.pos, lastComment.end);
+   for (const commentRange of commentRanges) {
+    const commentText = fullText.slice(commentRange.pos, commentRange.end);
 
-  return (commentText.startsWith("/**") && /(?:^|\s)@openapi(?:\s|$)/i.test(commentText));
+    if ( commentText.startsWith("/**") && /(?:^|\s)@openapi(?:\s|$)/i.test(commentText) )
+	{
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**

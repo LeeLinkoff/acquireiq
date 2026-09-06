@@ -22,6 +22,14 @@ export const generatedSchemas: Record<string, unknown> = {
       "stageSequence": {
         "type": "number"
       },
+      "stageState": {
+        "type": "string",
+        "enum": [
+          "complete",
+          "current",
+          "future"
+        ]
+      },
       "decision": {
         "type": "string",
         "nullable": true
@@ -42,6 +50,7 @@ export const generatedSchemas: Record<string, unknown> = {
       "approverName",
       "stageName",
       "stageSequence",
+      "stageState",
       "decision",
       "decidedAt",
       "notes"
@@ -205,6 +214,10 @@ export const generatedSchemas: Record<string, unknown> = {
         "type": "string",
         "format": "date-time"
       },
+      "currentApprovalStageSequence": {
+        "type": "number",
+        "nullable": true
+      },
       "approvals": {
         "type": "array",
         "items": {
@@ -227,6 +240,7 @@ export const generatedSchemas: Record<string, unknown> = {
       "budgetCeiling",
       "contract",
       "createdAt",
+      "currentApprovalStageSequence",
       "description",
       "fiscalYear",
       "id",
@@ -374,6 +388,27 @@ export const generatedSchemas: Record<string, unknown> = {
     ],
     "additionalProperties": false,
     "description": "Aggregate values returned by the acquisition dashboard endpoint."
+  },
+  "UpdateAcquisitionApproval": {
+    "type": "object",
+    "properties": {
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approved",
+          "rejected"
+        ]
+      },
+      "notes": {
+        "type": "string",
+        "nullable": true
+      }
+    },
+    "required": [
+      "decision"
+    ],
+    "additionalProperties": false,
+    "description": "Client payload for recording an individual approver's decision.\n\nThe approval row already determines the acquisition request, approver, stage, and stage sequence. The client may therefore change only the decision and optional notes associated with that specific approval."
   },
   "UpdateAcquisitionRequestStatus": {
     "type": "object",

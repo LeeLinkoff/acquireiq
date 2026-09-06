@@ -14,7 +14,7 @@ if not defined PSQL (
     exit /b 1
 )
 
-set "SQLFILE=%~dp0create-database.sql"
+set "SQLFILE=%~dp0setup-database.sql"
 
 if not exist "%SQLFILE%" (
     echo ERROR: SQL file was not found:

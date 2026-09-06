@@ -248,7 +248,7 @@ const swaggerSpec = {
 		get: {
 		tags: ["Acquisition Requests"],
 		summary: "Get an acquisition request by ID",
-		description: "Returns one acquisition request together with its ordered approval chain, associated contract when present, and protest context.",
+		description: "Returns one acquisition request together with its derived current approval stage, ordered individual approval records, associated contract when present, and protest context. Approval-stage progression is independent of acquisition request status.",
 		parameters: [
 		  {
 			name: "id",
@@ -391,6 +391,107 @@ const swaggerSpec = {
         }
       }
     },
+    "/requests/{requestId}/approvals/{approvalId}/decision": {
+      patch: {
+        tags: ["Acquisition Requests"],
+        summary: "Record an approval decision",
+        description: "Records an approved or rejected decision for one individual approval. Approval-stage progression and acquisition request status are derived or managed separately.",
+        parameters: [
+          {
+            name: "requestId",
+            in: "path",
+            required: true,
+            description: "Acquisition request ID",
+            schema: {
+              type: "integer",
+              minimum: 1
+            }
+          },
+          {
+            name: "approvalId",
+            in: "path",
+            required: true,
+            description: "Approval ID",
+            schema: {
+              type: "integer",
+              minimum: 1
+            }
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/UpdateAcquisitionApproval"
+              },
+              example: {
+                decision: "approved",
+                notes: "Review completed."
+              }
+            }
+          }
+        },
+        responses: {
+		  "200": {
+			  description: "Approval decision recorded",
+			  content: {
+				"application/json": {
+				  schema: {
+					type: "object",
+					properties: {
+					  approval: {
+						$ref: "#/components/schemas/AcquisitionApproval"
+					  }
+					},
+					required: ["approval"]
+				  }
+				}
+			  }
+		  },		
+          "400": {
+            description: "Invalid request ID, approval ID, decision, or notes",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            description: "Acquisition request or approval not found",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            description: "Approval decision has already been recorded",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            description: "Unexpected server or database error",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },	
 	"/dashboard": {
       get: {
         tags: ["Dashboard"],

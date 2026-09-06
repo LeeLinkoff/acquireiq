@@ -51,17 +51,24 @@
  
 import {Router,type NextFunction,type Request,type Response} from "express";
 
+/*
+ * This project uses TypeScript with NodeNext/ESM. Local imports intentionally use .js extensions even though the source files are .ts.
+ * TypeScript resolves them to the corresponding .ts source during development and preserves the .js paths for the compiled files that Node executes from dist/.
+*/
 import { ApiError } from "../errors/api-error.js";
 import {
   createRequest,
   getRequestById,
   getRequests,
   requestorExists,
+  updateApprovalDecision,
   updateRequestStatus,
   type AcquisitionRequestStatus,
   type CreateAcquisitionRequest,
-  type RequestFilters
+  type RequestFilters,
+  type UpdateAcquisitionApproval
 } from "../services/requests.js";
+
 
 /**
  * Acquisition-request status values accepted by the HTTP API.
@@ -184,6 +191,10 @@ router.post(
         fiscalYear
       } = req.body ?? {};
 
+	  // ************************************************************************************
+	  // TODO: Aggregate all request-validation errors and return them together instead of stopping at the first validation failure.
+	  // ************************************************************************************
+	  
       // Reject missing or whitespace-only titles.
       if (typeof title !== "string" || title.trim().length === 0) {
         throw new ApiError(400, "title is required.");
@@ -314,6 +325,102 @@ router.patch(
       }
 
       res.json(result.request);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+
+// PATCH /requests/:requestId/approvals/:approvalId/decision
+//
+// Records one approver's individual decision.
+// Approval-stage progression and acquisition request status are handled separately.
+router.patch(
+  "/requests/:requestId/approvals/:approvalId/decision",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!/^\d+$/.test(req.params.requestId)) {
+        throw new ApiError(
+          400,
+          "Request id must be a positive integer."
+        );
+      }
+
+      if (!/^\d+$/.test(req.params.approvalId)) {
+        throw new ApiError(
+          400,
+          "Approval id must be a positive integer."
+        );
+      }
+
+      const requestId = Number(req.params.requestId);
+      const approvalId = Number(req.params.approvalId);
+
+      if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+        throw new ApiError(
+          400,
+          "Request id must be a positive integer."
+        );
+      }
+
+      if (!Number.isSafeInteger(approvalId) || approvalId <= 0) {
+        throw new ApiError(
+          400,
+          "Approval id must be a positive integer."
+        );
+      }
+
+      const { decision, notes } = req.body ?? {};
+
+      if (decision !== "approved" && decision !== "rejected") {
+        throw new ApiError(
+          400,
+          "decision must be approved or rejected."
+        );
+      }
+
+      if (
+        notes !== undefined &&
+        notes !== null &&
+        typeof notes !== "string"
+      ) {
+        throw new ApiError(
+          400,
+          "notes must be a string or null."
+        );
+      }
+
+      const input: UpdateAcquisitionApproval = {
+        decision,
+        notes: typeof notes === "string" ? notes.trim() : notes
+      };
+
+      const result = await updateApprovalDecision(
+        requestId,
+        approvalId,
+        input
+      );
+
+      if (result.outcome === "request_not_found") {
+        throw new ApiError(404, "Acquisition request not found.");
+      }
+
+      if (result.outcome === "approval_not_found") {
+        throw new ApiError(
+          404,
+          "Approval not found for this acquisition request."
+        );
+      }
+
+      if (result.outcome === "already_decided") {
+        throw new ApiError(
+          422,
+          "Approval decision has already been recorded."
+        );
+      }
+
+      res.json({approval: result.approval});
     } catch (error) {
       next(error);
     }

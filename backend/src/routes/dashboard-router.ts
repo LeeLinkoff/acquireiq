@@ -45,6 +45,10 @@
 
 import {Router,type NextFunction,type Request,type Response} from "express";
 
+/*
+ * This project uses TypeScript with NodeNext/ESM. Local imports intentionally use .js extensions even though the source files are .ts.
+ * TypeScript resolves them to the corresponding .ts source during development and preserves the .js paths for the compiled files that Node executes from dist/.
+*/
 import { getDashboard } from "../services/requests.js";
 
 
