@@ -8,7 +8,7 @@ AcquireIQ models a government IT acquisition pipeline covering acquisition reque
 
 The application implements acquisition-request tracking and status advancement, dashboard reporting, request creation and detail, and AI-assisted natural-language pipeline search.
 
-Parallel approvals are supported at the data-model and read/display levels. Multiple approvers can be assigned to the same `stage_sequence`, and existing approval stages and decisions are returned by the API and displayed in the UI. **I initially attempted to implement the approval workflow more completely by filling in behavior that appeared reasonable from the written requirements. However, once the API and UI were integrated and I exercised the workflow end to end from a user's perspective, inconsistencies in those assumptions became apparent.** The challenge does not fully define how approval decisions are recorded, how mixed approved/rejected decisions affect progression, or how approval-stage progression relates to request status. Had those gaps been apparent during my initial requirements review, I would have sought clarification before implementation. Given the challenge timebox and lack of access to end users or acquisition-domain SMEs, I ultimately removed the assumed workflow behavior rather than present invented business rules as requirements.
+Parallel approvals are supported through the data model, API, and UI. Multiple approvers can be assigned to the same `stage_sequence`, and approval decisions can be recorded for the current stage. The backend determines whether each approval stage is `current`, `complete`, or `future` from the recorded decisions and stage sequence, and only the current stage can accept decisions. Once every approver at the current stage has recorded a decision, that stage becomes complete and the next incomplete stage becomes current. The React UI is responsible only for presenting this backend-derived state and collecting user actions; the API provides the contract between the UI and backend, while authoritative approval-stage validation and determination remain in the backend. This stage progression is intentionally independent of the separate acquisition-request status state machine because the challenge does not define a relationship between the two.
 
 The central design principle is simple: **AI output is useful input, but it is not trusted application state.** LLM-generated filters are validated by deterministic application logic before they can affect a database query.
 
@@ -21,7 +21,7 @@ The central design principle is simple: **AI output is useful input, but it is n
 |                               React UI                                  |
 |                                                                         |
 |  Acquisition Pipeline     Create Request   Request Detail   AI Search   |
-|  Request Filtering        Request Status Actions                        |
+|  Request Filtering        Status Actions   Approval Decisions           |
 +----------------------------------+--------------------------------------+
                                    |
                                    | REST / JSON
@@ -30,7 +30,8 @@ The central design principle is simple: **AI output is useful input, but it is n
 |                         Node / Express API                            |
 |                                                                       |
 |  Request Validation        Request Filtering                          |
-|  Request Status Updates    Request Detail                             |
+|  Request Status Updates    Approval Validation                        |
+|  Approval Stage Logic      Request Detail                             |
 |  Dashboard                 AI Search                                  |
 +----------------------+-------------------------------+----------------+
                        |                               |
@@ -300,9 +301,9 @@ protests
 
 Multiple approval records may share the same `stage_sequence`. Those records represent parallel approvers within the same approval stage.
 
-AcquireIQ supports this structure at the data-model and read/display levels. Existing approval records and decisions can be stored, retrieved, grouped by `stage_sequence`, and displayed in request detail.
+AcquireIQ supports this structure through the data model, API, and UI. Existing approval records and decisions can be stored, retrieved, grouped by `stage_sequence`, and displayed in request detail. Decisions can be recorded for approvals in the current stage.
 
-The application does not provide operations for assigning approvers, recording approval decisions, or advancing approval stages. The challenge does not fully define those operations or how approval-stage progression relates to acquisition-request status, so that behavior is intentionally not inferred or implemented.
+The backend derives each stage's state as `current`, `complete`, or `future` from the approval records and stage sequence. A stage becomes complete once every approver at that stage has recorded a decision, and the next incomplete stage then becomes current. Future stages cannot accept decisions. Approval-stage progression remains separate from acquisition-request status because the challenge does not define a relationship between them.
 
 ### Database integrity
 
@@ -325,6 +326,7 @@ GET    /requests
 GET    /requests/:id
 POST   /requests
 PATCH  /requests/:id/status
+PATCH  /requests/:requestId/approvals/:approvalId/decision
 GET    /dashboard
 POST   /assist/query
 ```
@@ -339,6 +341,8 @@ GET    /api/docs
 Swagger / OpenAPI documentation is exposed through `/api/docs`.
 
 `GET /requests/:id` returns the acquisition request together with its approval records, contract when one exists, and protests. Approval records include `stageSequence`, allowing parallel approvers assigned to the same stage to be identified by the client.
+
+`PATCH /requests/:requestId/approvals/:approvalId/decision` records an `approved` or `rejected` decision for an approval. The route validates HTTP input and delegates the operation to the backend service layer, which validates whether the approval can be acted upon and derives approval-stage state. The React UI presents the resulting state and available actions rather than implementing approval-stage rules itself.
 
 HTTP routes remain thin: they parse and validate requests, invoke application services, select HTTP status codes, and format responses.
 
@@ -619,7 +623,7 @@ The React application provides the user-facing interface for:
 -   viewing the acquisition pipeline
 -   viewing acquisition-request detail
 -   creating acquisition requests
--   viewing approval and protest state
+-   viewing approval-stage state and recording decisions for approvals in the current stage
 -   performing permitted status actions
 -   viewing dashboard information
 -   submitting natural-language AI-assisted searches
@@ -629,6 +633,7 @@ The React application provides the user-facing interface for:
 
 The frontend does not duplicate authoritative request-status transition rules. It uses API responses to determine and display valid state, while the backend remains responsible for enforcing request-status transitions and database integrity.
 
+The same separation applies to approvals. The React UI handles presentation and user interaction, while the backend determines approval-stage state and validates whether a decision can be recorded. The UI uses the backend-derived `current`, `complete`, and `future` stage states to display the workflow and expose decision actions only where appropriate.
 ------------------------------------------------------------------------
 
 ## Design Principles
@@ -676,6 +681,7 @@ ALL BACKEND REGRESSION TESTS PASSED.
 -   concurrent status-update attempts
 -   request validation
 -   request-detail behavior, including approvals, contract, and protests
+-   approval decision recording, current/complete/future stage determination, stage advancement, and prevention of decisions on future stages
 -   PostgreSQL primary-key sequence integrity
 -   database enforcement of valid request statuses
 -   AI structured-filter validation
@@ -688,18 +694,16 @@ Tests exercise backend business behavior independently of the React UI wherever 
 
 ### Parallel approvals
 
-The PostgreSQL data model supports parallel approvals by allowing multiple approval records to share the same `stage_sequence`.
+The PostgreSQL data model supports parallel approvals by allowing multiple approval records to share the same `stage_sequence`. AcquireIQ can store, retrieve, display, and record decisions for those approvals through the API and UI.
 
-This is a data-model and read/display capability only. AcquireIQ can store, retrieve, and display existing parallel approval records, but the API and UI do not provide a mechanism for recording approval decisions or advancing approval stages.
-
-The challenge states that a request advances to the next approval stage once every approver at the current stage has recorded a decision, but it does not define how those decisions are recorded, how mixed approved/rejected decisions affect progression, or how approval-stage progression relates to acquisition-request `status`. Those gaps became apparent during end-to-end testing of the integrated UI and API. Given the challenge timebox, I removed the initially assumed behavior rather than invent consequential business rules that were not defined by the requirements.
+Approval-stage progression is derived by the backend from the recorded decisions and stage sequence. A stage remains `current` while it has a pending approval, becomes `complete` once every approver at that stage has recorded a decision, and later incomplete stages remain `future` until all preceding stages are complete. Only approvals in the current stage can accept decisions. Approval-stage progression remains independent of acquisition-request `status` because the challenge does not define a relationship between the two.
 
 ### Target implementation scope
 
 The completed challenge implementation covers:
 
 -   PostgreSQL domain schema and demonstration data
--   parallel approval data modeling and read/display support
+-   parallel approval data modeling, decision recording, stage-state determination, and UI presentation
 -   acquisition-request REST API
 -   request creation and detail
 -   request filtering
@@ -714,15 +718,15 @@ The completed challenge implementation covers:
 
 ### With more time
 
-The highest-priority next step would be to clarify the approval lifecycle with contracting-office users and acquisition-domain subject-matter experts, then implement that clarified workflow. Specifically, I would define how approval decisions are recorded, how rejected or mixed decisions affect stage progression, and how approval-stage progression relates to acquisition-request status before adding the corresponding API and UI operations.
+The highest-priority next step would be to clarify the broader approval lifecycle with contracting-office users and acquisition-domain subject-matter experts. AcquireIQ implements the challenge-required decision recording and stage advancement behavior, but additional business rules remain intentionally undefined. Specifically, I would clarify how rejected or mixed decisions should affect the broader acquisition process, how approvers are assigned or changed, and whether approval-stage progression should have any relationship to acquisition-request status before implementing those additional behaviors.
 
 ### Intentionally out of scope
 
 Authentication and production deployment are outside the challenge's required implementation scope. Because authentication is not implemented, the frontend uses a user ID query parameter to identify the acting user, as permitted by the challenge requirements.
 
-A complete approval workflow is also intentionally **not implemented**. The data model supports approval stages and parallel approvers, and existing approval data can be retrieved and displayed, but AcquireIQ does not provide operations for assigning approvers, recording approval decisions, advancing approval stages, or coupling approval-stage progression to acquisition-request status.
+The challenge-required approval decision and stage-progression behavior is implemented. AcquireIQ records `approved` or `rejected` decisions for approvals in the current stage, derives `current`, `complete`, and `future` stage state in the backend, and advances the current stage once every approver at that stage has recorded a decision.
 
-In a real production environment, these capabilities would not simply be omitted. I would work with end users, acquisition-domain subject-matter experts, and product stakeholders to clarify the intended workflow before implementing them. That process would define how approvers are assigned, how decisions are recorded, how rejected or mixed decisions affect progression, and how approval stages relate to request status. The challenge does not provide enough information to define those consequential business rules without making assumptions.
+Broader approval-lifecycle behavior remains intentionally out of scope where the challenge does not define the required business rules. AcquireIQ does not implement approver assignment or reassignment, special workflow consequences for rejected or mixed decisions beyond recording the decisions and completing the stage, or a coupling between approval-stage progression and acquisition-request status. Those behaviors would require clarification with end users, acquisition-domain subject-matter experts, and product stakeholders before implementation.
 
 Optional stretch functionality was not a primary implementation goal. Given the challenge timebox, I prioritized completing, exercising, validating, and documenting the required implementation. Where additional work directly strengthened required behavior, such as the automated simultaneous-update concurrency test, I included it rather than pursuing broader optional features.
 
@@ -732,7 +736,7 @@ Optional stretch functionality was not a primary implementation goal. Given the 
 
 ### Parallel approvals
 
-Parallel approvals are represented in the data model by multiple approval records sharing the same `stage_sequence`. This allows the database to represent parallel approvers without introducing a separate stage table solely for the challenge. Approval data is retrieved and displayed by the application, but approval assignment, decision entry, stage progression, and its relationship to request status are intentionally not implemented because those business rules are not fully defined by the challenge.
+Parallel approvals are represented in the data model by multiple approval records sharing the same `stage_sequence`. This supports parallel approvers without introducing a separate stage table solely for the challenge. The backend derives stage state from the approval records and sequence, validates decision actions, and advances the active stage once all approvals in that stage have recorded decisions. The API provides the contract for retrieving approval state and recording decisions, while the React UI remains responsible for presentation and user interaction. Broader approval-lifecycle rules, including approver assignment and any relationship between approval-stage progression and acquisition-request status, are intentionally not inferred.
 
 ### Database bootstrap
 
@@ -748,7 +752,7 @@ The LLM is limited to interpreting natural language into a structured filter. Th
 
 ### Frontend responsibility
 
-The React UI displays application state and the actions actually supported by the implementation, including request creation and request-status updates. The backend remains the source of truth for validating and enforcing request-status transitions.
+The React UI is responsible for presentation and user interaction. It displays application state and exposes supported actions, including request creation, request-status updates, and approval decisions. The API provides the contract between the UI and backend, while the backend remains the source of truth for validating and enforcing request-status transitions, validating approval decisions, and determining approval-stage state and progression.
 
 ------------------------------------------------------------------------
 
@@ -776,5 +780,6 @@ The following repository documents describe the implemented system and the decis
 - [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) — supplemental architecture and public deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture and optional portfolio deployment.
 - [`REQUIREMENTS_TO_DESIGN_VERIFICATION.md`](REQUIREMENTS_TO_DESIGN_VERIFICATION.md) — concise requirement-by-requirement verification of how the implementation and design address the challenge requirements.
 - [`REQUEST_STATUS_STATE_MACHINE.md`](REQUEST_STATUS_STATE_MACHINE.md) — the implemented acquisition-request status state machine, including valid transitions and terminal states.
+- [`APPROVAL_STAGE_STATE_MACHINE.md`](APPROVAL_STAGE_STATE_MACHINE.md) — the separate approval-stage state machine, documenting backend-derived `future`, `current`, and `complete` stage states, parallel approval behavior, decision validation, and stage advancement.
 
-Together, these documents distinguish implemented behavior from deliberate design choices and functionality that would require additional business clarification before implementation.
+Together, these documents distinguish implemented behavior from deliberate design choices and functionality that would require additional business clarification before implementation. In particular, the separate state-machine documents make explicit that acquisition-request status progression and approval-stage progression are independent concepts in AcquireIQ because the challenge does not define a relationship between them.

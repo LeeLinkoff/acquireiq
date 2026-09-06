@@ -84,7 +84,7 @@ AcquireIQ therefore distinguishes between behavior explicitly defined by the cha
 
 The application implements the required request-status workflow through `PATCH /requests/:id/status`. Request status follows a fixed transition graph, invalid jumps are rejected, terminal states cannot be revived, and the operation is protected against concurrent writes.
 
-AcquireIQ also models the required approval structure. Multiple approvers can belong to the same `stage_sequence`, approval stages and parallel groupings can be represented, and approval decisions can be persisted and displayed as part of request detail.
+AcquireIQ also implements the challenge-required approval behavior. Multiple approvers can belong to the same `stage_sequence`, approval decisions can be recorded through the API, and the backend derives whether each stage is `current`, `complete`, or `future`. A current stage remains active until every approver at that stage has recorded a decision; once complete, the next incomplete stage becomes current. Future stages cannot accept decisions.
 
 What AcquireIQ deliberately does **not** do is invent a relationship between approval-stage progression and request-status progression that the challenge does not specify.
 
@@ -96,11 +96,9 @@ stage_sequence 2 = in_review
 stage_sequence 3 = approved
 ```
 
-It also does not introduce an additional approval-decision API contract solely to fill the gap in the supplied requirements.
+The React UI handles presentation and user interaction, the API provides the contract between the UI and backend, and the backend remains authoritative for approval validation and stage-state determination as well as the separate request-status state machine.
 
-This is intentional.
-
-Given access to the appropriate stakeholders, I would resolve the approval lifecycle first, validate it through a prototype, and then implement the resulting contract. In the absence of that clarification, I prefer an explicitly documented limitation over silently encoding an invented business rule.
+Broader approval-lifecycle rules remain intentionally undefined where the challenge provides no business rule, including approver assignment or reassignment and the effect of rejected or mixed decisions beyond satisfying the stated requirement that every approver at the current stage has recorded a decision.
 
 ---
 
@@ -360,17 +358,14 @@ GET    /requests
 GET    /requests/:id
 POST   /requests
 PATCH  /requests/:id/status
+PATCH  /requests/:requestId/approvals/:approvalId/decision
 GET    /dashboard
 POST   /assist/query
 ```
 
-The API avoids exposing persistence details directly to clients. Request validation, workflow validation, AI-output validation, and database operations remain server responsibilities.
+The API avoids exposing generic CRUD operations merely because additional operations could be imagined from the data model. An API should represent understood business capabilities rather than simply expose every table.
 
-I intentionally did not add endpoints merely because additional operations could be imagined from the data model. An API should represent an understood business capability, not simply provide CRUD operations for every table.
-
-This is particularly relevant to approvals. Adding something such as an approval-decision endpoint without first resolving the approval lifecycle would make the API appear more complete while actually embedding an undefined business contract.
-
-With more time, the API contract change I would make would be to add an explicit operation for the approval lifecycle once that lifecycle had been clarified with contracting officers and acquisition SMEs. I would not define that endpoint or its transition semantics from the current requirements because doing so would require guessing the unresolved relationship among approval decisions, approval-stage progression, rejection, and request-status progression. Once those business rules were established, I would represent the resulting approval operation explicitly in the API rather than forcing that behavior through the request-status endpoint.
+For approvals, AcquireIQ provides `PATCH /requests/:requestId/approvals/:approvalId/decision` because recording approval decisions and advancing once every approver at the current stage has recorded a decision are explicitly required behaviors. The route accepts the user action through the API contract, while the backend validates whether the approval belongs to the current stage and derives stage progression from the authoritative approval data. The implementation deliberately does not couple approval-stage progression to request-status progression because that relationship is not defined by the challenge.
 
 ---
 
@@ -449,7 +444,7 @@ PostgreSQL is a good fit because the application contains strongly related domai
 
 Parallel approvals are represented by allowing multiple approval records to share the same `stage_sequence`. This avoids embedding individual approvers into request records and allows the approval chain to represent both sequential stages and parallel participants.
 
-The model intentionally does not introduce a persisted `current_stage` field merely to compensate for the incomplete workflow definition. Adding such a field would require defining authoritative rules for changing it, which returns to the unresolved approval-lifecycle questions described above.
+The model intentionally does not persist a separate `current_stage` field. Approval-stage state is derived by the backend from `stage_sequence` and the recorded approval decisions. I consider deriving this state preferable to storing a separate mutable value because the underlying approval records already contain the information needed to determine the current stage. Persisting the same state separately would introduce another value that must be kept synchronized and could become inconsistent with the approval records. This derived stage progression remains independent of acquisition-request status because the challenge does not define a relationship between the two.
 
 ---
 
@@ -469,7 +464,7 @@ This is another example of intentionally avoiding functionality that would requi
 
 The frontend is intentionally centered on one meaningful contracting-officer workflow rather than being expanded into a large multi-page application.
 
-The interface provides the required pipeline visibility, status grouping/filtering, request detail, approval-chain information including parallel groupings, contract/protest context, status advancement, and natural-language assisted search.
+The interface provides the required pipeline visibility, status grouping/filtering, request detail, approval-chain information including parallel groupings and backend-derived stage state, approval-decision actions for the current stage, contract/protest context, request-status advancement, and natural-language assisted search. The React UI handles presentation and user interaction, while the API provides the contract to backend services that remain authoritative for approval validation, stage-state determination, and request-status rules.
 
 Real API calls are used throughout the workflow. Loading and error conditions are represented explicitly, and successful status updates are reflected back into the UI rather than requiring a page reload.
 
@@ -501,7 +496,7 @@ The single most important next improvement would be to complete and validate the
 
 I would use the existing application as a working prototype and walk through concrete scenarios until the relationship among request status, approval stages, approval decisions, rejection, and advancement was unambiguous. The resulting decisions would be captured as explicit acceptance criteria and workflow diagrams before implementation continued.
 
-Only then would I implement the clarified approval lifecycle. I consider this more valuable than immediately adding another technical feature because the application already exposes the central unresolved question discovered during end-to-end use: what the complete approval process is actually supposed to do. Resolving that with the people who perform and understand the acquisition process would establish the business contract needed to make subsequent API, data-model, authorization, and UI decisions without guessing.
+Only then would I extend the implemented approval workflow with the clarified broader lifecycle rules. AcquireIQ already implements the challenge-required approval decision recording and stage advancement behavior; the remaining questions concern business behavior the challenge does not define, particularly the consequences of rejected or mixed decisions, approver assignment or reassignment, authorization, and any relationship between approval-stage progression and request-status progression. Resolving those questions with the people who perform and understand the acquisition process would establish the business contract needed to make subsequent API, data-model, authorization, and UI decisions without guessing.
 
 ---
 
@@ -513,7 +508,8 @@ The challenge explicitly identifies its stretch items as optional, and I priorit
 
 I did not pursue the broader optional capabilities such as protest resolution or deployment work as substitutes for completing the core application. The required exercise already spans data modeling, database setup and seed data, concurrency-safe request-status behavior, REST APIs, LLM integration and validation, frontend integration, testing, and design documentation.
 
-This was also consistent with the most important issue discovered during implementation: further development is less valuable than first resolving the approval-workflow ambiguities with actual users and domain SMEs. Given additional time, that validation would take priority over implementing optional features simply to increase the amount of code delivered.
+This was also consistent with the most important issue discovered during implementation. Extending the approval workflow beyond the challenge-required behavior is less valuable than first resolving the remaining business-rule ambiguities with actual users and domain SMEs. Given additional time, that validation would take priority over implementing optional features simply to increase the amount of code delivered.
+
 ---
 
 ## 17. Final Design Takeaway

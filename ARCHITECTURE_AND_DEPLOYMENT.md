@@ -126,7 +126,7 @@ HTTP response
 
 The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. 
 
-Acquisition workflow logic, persistence behavior, status-transition rules, dashboard queries, and AI interpretation remain behind service boundaries.
+Acquisition workflow logic, persistence behavior, request-status transition rules, approval-decision validation and stage-state determination, dashboard queries, and AI interpretation remain behind service boundaries.
 
 This separation is useful beyond code organization. It keeps business logic independent of Express request/response objects and makes the important behavior easier to test.
 
@@ -151,7 +151,7 @@ protests
 
 The database is responsible for durable relational state and participates directly in correctness through transactions, constraints, and indexes.
 
-Parallel approvals are represented as separate approval records that may share the same stage_sequence. This allows multiple approvers to be represented within the same approval stage and displayed together by the application. AcquireIQ does not infer approval-stage advancement rules from those records because the challenge does not fully define how approval decisions, mixed decisions, stage progression, and acquisition-request status relate to one another.
+Parallel approvals are represented as separate approval records that may share the same `stage_sequence`. This allows multiple approvers to participate independently within the same approval stage. The backend derives each stage as `future`, `current`, or `complete` from the authoritative approval records and advances to the next incomplete stage once every approver at the current stage has recorded a decision. AcquireIQ deliberately does not infer broader business rules the challenge does not define, including special consequences for rejected or mixed decisions or any relationship between approval-stage progression and acquisition-request status.
 
 Status transitions are not treated as arbitrary CRUD updates. The application owns the valid transition graph, while PostgreSQL transaction/concurrency mechanisms protect the state used to make the transition decision.
 
@@ -224,6 +224,8 @@ The API exposes an explicit low-confidence or fallback condition when the interp
 
 The frontend uses React and Vite.
 
+The reusable frontend scaffold deliberately uses JavaScript rather than TypeScript. Because the frontend is intentionally a relatively thin presentation and interaction layer, with consequential business rules and workflow validation remaining backend-owned, the additional compile-time type layer and build/debugging indirection of TypeScript were not considered justified for this UI. Using JavaScript keeps the browser-facing implementation closer to the language ultimately executed by the browser and reduces unnecessary complexity during development and debugging. If the frontend evolved to contain substantially richer client-side domain logic, state, or shared contracts, the tradeoff would change and TypeScript would become a stronger choice.
+
 The existing scaffold provides a centralized API client, reusable component structure, logging, loading/error handling patterns, and a working backend health check.
 
 AcquireIQ builds the acquisition-specific interface on that foundation.
@@ -233,8 +235,9 @@ Primary user-facing areas include:
 ```text
 Acquisition pipeline
 Acquisition request detail
-Approval chain
-Status actions
+Approval chain and derived stage state
+Approval decision actions
+Request-status actions
 Dashboard
 AI-assisted search
 AI confidence/fallback state
@@ -278,7 +281,7 @@ AcquireIQ-specific behavior is new:
 
 - PostgreSQL acquisition model
 - acquisition request APIs
-- parallel approval data modeling and read/display support
+- parallel approval modeling, decision recording, backend validation, and derived stage progression
 - concurrency-safe status transitions
 - dashboard aggregation
 - AI structured-filter contract
@@ -308,9 +311,7 @@ The live deployment therefore serves two purposes:
 
 The challenge suggests a focused implementation window, but the additional time spent beyond that window is intentional. Once the decision was made to retain AcquireIQ as a public portfolio application, stopping at an artificial time boundary and returning later to complete the same work would be inefficient while the architecture, implementation decisions, and codebase are already fresh.
 
-Unfortunately, today's technology hiring market increasingly expects candidates to present exceptionally polished and complete work during the interview process. That incentive is different from normal product delivery. In a professional delivery environment, the objective is correctness, maintainability, fitness for purpose, and business value—not pursuing perfection beyond what the requirements and priorities justify.
-
-The additional effort here is therefore a deliberate expansion of the project's purpose, not an inability to control scope. It is enabled by existing infrastructure and is not a dependency of the challenge implementation.
+The additional effort is a deliberate expansion of the project's purpose, not a dependency of the challenge implementation. I chose to invest additional time because I believe the resulting application is well engineered and worth retaining as a polished project that I can revisit, critically review, learn from, and continue to evolve after the assessment.
 
 The repository remains the authoritative assessment deliverable.
 
@@ -501,7 +502,7 @@ PostgreSQL host
 database name
 application database user
 connection configuration
-migration procedure
+database bootstrap/schema initialization procedure
 seed procedure for the demo dataset
 backup/recovery expectations for the public demo
 ```
@@ -722,7 +723,7 @@ Apache ProxyPass rule
 Vite base path
 frontend API base behavior
 PostgreSQL deployment and credentials
-database migrations
+database bootstrap/schema initialization
 demo seed data
 LLM provider credentials
 GitHub Actions secrets/configuration

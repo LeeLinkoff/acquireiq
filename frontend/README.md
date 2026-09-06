@@ -2,7 +2,7 @@
 
 React and Vite frontend for AcquireIQ, a government IT acquisition pipeline application.
 
-The frontend provides the user-facing acquisition workflow experience and communicates with the AcquireIQ backend through the centralized API client. Acquisition workflow rules and persistence remain server-owned.
+The frontend provides the user-facing acquisition workflow experience and communicates with the AcquireIQ backend through the centralized API client. Presentation and user interaction remain client-side, while request-status rules, approval-decision validation, approval-stage determination, and persistence remain server-owned.
 
 ## Technology
 
@@ -22,7 +22,7 @@ The AcquireIQ frontend provides:
 - status and priority filtering
 - request detail
 - approval stages with parallel approver grouping
-- approval decision display
+- approval decision display and decision actions for eligible current-stage approvers
 - contract information
 - protest information
 - contracting-officer status actions
@@ -61,7 +61,7 @@ For local development, configure:
 VITE_API_BASE=http://localhost:3002
 ```
 
-The backend exposes the AcquireIQ application APIs used by the frontend, including request collection/detail/create/status operations, dashboard aggregation, AI-assisted search, and the backend health endpoint.
+The backend exposes the AcquireIQ application APIs used by the frontend, including request collection/detail/create/status operations, approval decision operations, dashboard aggregation, AI-assisted search, and the backend health endpoint.
 
 The browser never communicates directly with PostgreSQL or the LLM provider.
 
@@ -115,11 +115,11 @@ Request detail displays the acquisition information returned by the backend, inc
 - associated contract information when present
 - protest information when present
 
-Parallel grouping is a representation and display concern. The frontend does not invent approval-stage advancement rules that are not defined by the challenge.
+Parallel grouping is a representation and display concern. The frontend presents the approval-stage state and decision eligibility provided by the backend and does not independently implement approval-stage advancement rules.
 
 ## Status Updates
 
-Contracting-officer status actions call the backend status-transition API.
+Contracting-officer status actions call the backend request-status transition API.
 
 Valid transition rules are owned by the backend rather than duplicated as authoritative business logic in the browser. Successful writes refresh the displayed application state, while rejected transitions are surfaced to the user.
 
@@ -183,7 +183,8 @@ The frontend is responsible for presentation, user interaction, API invocation, 
 The backend remains authoritative for:
 
 - request validation
-- status-transition rules
+- request-status transition rules
+- approval-decision validation and approval-stage progression
 - concurrency safety
 - PostgreSQL persistence
 - dashboard aggregation
@@ -191,3 +192,9 @@ The backend remains authoritative for:
 - parameterized database queries
 
 This separation prevents UI behavior from becoming the authoritative implementation of acquisition business rules.
+
+## Challenge Scope
+
+This implementation intentionally does not model distinctions between contracting officers and approvers beyond the workflow information required by the challenge. In a production acquisition system, these would likely be distinct roles with separate permissions, responsibilities, and authorization rules. The current implementation focuses on representing and exercising the workflow behavior required by the challenge rather than introducing additional role and authorization complexity that the requirements do not define.
+
+Similarly, the challenge defines request creation as the primary write operation. The frontend therefore supports adding acquisition requests but does not provide general editing of existing request, contract, protest, or approval records. Those capabilities would require additional business rules, permissions, and lifecycle requirements that are outside the defined scope.

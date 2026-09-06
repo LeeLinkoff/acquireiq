@@ -4,6 +4,8 @@ This document defines the acquisition-request status values and the legal status
 
 The challenge requires a fixed set of valid request-status transitions but does not specify the status values or transition graph. The values and transitions below are therefore AcquireIQ design decisions.
 
+Approval-stage progression is a separate state machine documented in `APPROVAL_STAGE_STATE_MACHINE.md`. Approval-stage progression does not implicitly change acquisition-request `status`.
+
 ------------------------------------------------------------------------
 
 ## 1. Request Statuses

@@ -2,7 +2,7 @@
 
 Node.js, Express, TypeScript, and PostgreSQL backend for AcquireIQ, a government IT acquisition workflow application.
 
-The backend owns request validation, acquisition workflow rules, concurrency-safe status transitions, PostgreSQL access, dashboard aggregation, and validation of AI-generated structured search filters. The browser never communicates directly with PostgreSQL or the LLM provider.
+The backend owns request validation, acquisition workflow rules, concurrency-safe request-status transitions, approval-decision validation and derived stage progression, PostgreSQL access, dashboard aggregation, and validation of AI-generated structured search filters. The browser never communicates directly with PostgreSQL or the LLM provider.
 
 ## Technology
 
@@ -41,7 +41,7 @@ HTTP response
 
 `server.ts` is the application composition root, responsible for global middleware, mounting the category routers, centralized error handling, and application startup. 
 
-The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. Acquisition workflow logic, persistence behavior, dashboard queries, concurrency-sensitive status transitions, and AI interpretation remain behind service boundaries.
+The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. Acquisition workflow logic, persistence behavior, concurrency-sensitive request-status transitions, approval-decision validation and derived stage progression, dashboard queries, and AI interpretation remain behind service boundaries.
 
 PostgreSQL is the authoritative state store. The LLM is used only to interpret natural-language search requests into a structured filter. LLM output is treated as untrusted input, validated by the application, and translated into server-owned parameterized SQL. There is no direct LLM-to-database path.
 
@@ -50,8 +50,8 @@ PostgreSQL is the authoritative state store. The LLM is used only to interpret n
 ```text
 backend/
 ├── scripts/
-│   ├── create-database.bat
-│   ├── create-database.sql
+│   ├── setup-database.bat
+│   ├── setup-database.sql
 │   ├── seed-database.bat
 │   └── generate-openapi-schemas.ts
 ├── seeds/
@@ -102,7 +102,7 @@ protests
 
 Plain SQL is used rather than an ORM because the relational rules, constraints, indexes, and concurrency behavior are important parts of the application and should remain explicit.
 
-Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. This supports parallel approval representation and allows the application to group and display approvers by stage without inventing approval-stage advancement rules that the challenge does not fully define.
+Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. The backend derives each stage as `future`, `current`, or `complete` from the authoritative approval records and advances to the next incomplete stage once every approver at the current stage has recorded a decision. Broader business rules not defined by the challenge, including special consequences for rejected or mixed decisions and any relationship between approval-stage progression and acquisition-request status, are deliberately not inferred.
 
 Status changes are business operations rather than arbitrary CRUD updates. Valid transitions are enforced by the application, and PostgreSQL transactions/concurrency controls protect the state used to make those decisions.
 
@@ -115,13 +115,13 @@ PostgreSQL must already be installed and running locally. PostgreSQL does not ne
 From `backend`, run:
 
 ```cmd
-scripts\create-database.bat
+scripts\setup-database.bat
 ```
 
 The script locates the installed PostgreSQL `psql.exe`, prompts once for the local PostgreSQL administrator password, and executes:
 
 ```text
-scripts\create-database.sql
+scripts\setup-database.sql
 ```
 
 The SQL bootstrap checks for and creates the AcquireIQ application role and database as needed, connects to the AcquireIQ database, and creates the required schema, constraints, and indexes.
@@ -166,6 +166,7 @@ AcquireIQ exposes the following application endpoints:
 | `GET` | `/requests/:id` | Retrieve acquisition-request detail |
 | `POST` | `/requests` | Create an acquisition request |
 | `PATCH` | `/requests/:id/status` | Perform a validated, concurrency-safe status transition |
+| `PATCH` | `/requests/:requestId/approvals/:approvalId/decision` | Record an approval decision with backend validation of current-stage eligibility and derived stage progression |
 | `GET` | `/dashboard` | Return acquisition pipeline/dashboard aggregates |
 | `POST` | `/assist/query` | Interpret a natural-language request and return validated acquisition search results |
 
@@ -180,7 +181,7 @@ Detailed request/response schemas, parameters, and status codes are maintained i
 
 ## Concurrency Safety
 
-Status transitions are performed inside PostgreSQL transactions. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the corresponding update is performed, preventing competing callers from successfully advancing from the same stale request state.
+Request-status transitions are performed inside PostgreSQL transactions. The acquisition request row is locked with `SELECT ... FOR UPDATE` before the current state is validated and the corresponding update is performed, preventing competing callers from successfully advancing from the same stale request state.
 
 The backend regression suite explicitly exercises competing transitions and verifies that exactly one competing transition succeeds with HTTP 200 while the stale competing transition is rejected with HTTP 422.
 
@@ -278,7 +279,7 @@ http://localhost:3002/api/docs
 Database creation and seed data are intentionally separate from application startup:
 
 ```cmd
-scripts\create-database.bat
+scripts\setup-database.bat
 scripts\seed-database.bat
 ```
 
@@ -304,7 +305,7 @@ Schema generation runs before TypeScript compilation when required by the projec
 
 ## Testing
 
-The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation in request detail, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
+The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation, approval-decision validation, and derived approval-stage progression, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
 
 The concurrency regression verifies that two competing transitions against the same request produce exactly one HTTP 200 response and one HTTP 422 response, with the final persisted state reflecting the successful transition.
 
@@ -331,7 +332,11 @@ This is a project-specific choice rather than a general rule against ORMs.
 
 ### Why separate approval rows?
 
-Each approver receives an individual row. Approvers at the same workflow step share `stage_sequence`. This represents parallel work directly and avoids maintaining a separate derived "stage complete" flag that could become inconsistent with the underlying approvals.
+AcquireIQ represents each approver with an individual `approvals` row, while approvers participating at the same workflow step share `stage_sequence`. The problem naturally lends itself to this relational representation: each approver has an independent assignment and ultimately records an independent decision, so one row per approver directly represents the underlying business facts without combining multiple decisions into a single record.
+
+This is an AcquireIQ implementation choice for representing the challenge-required parallel approval behavior. It also allows approval-stage state to be derived from the authoritative approval records rather than persisting redundant workflow state that could become inconsistent with the underlying decisions.
+
+A separate approval-stage entity was not introduced because the current requirements do not define independent stage attributes or behavior that require one. If stages later acquired their own properties, such as deadlines, escalation rules, quorum requirements, or stage-level outcomes, promoting the stage to a first-class domain entity would be appropriate.
 
 ### Why these indexes?
 
