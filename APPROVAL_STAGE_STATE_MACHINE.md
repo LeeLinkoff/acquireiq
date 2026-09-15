@@ -16,7 +16,7 @@ current
 complete
 ```
 
-These states are derived by the backend from approval `stage_sequence` values and recorded approval decisions. They are not persisted as a separate mutable stage-state value.
+These states are derived by PostgreSQL from approval `stage_sequence` values and recorded approval decisions. They are not persisted as a separate mutable stage-state value.
 
 - `future` — an earlier approval stage is not yet complete.
 - `current` — all preceding stages are complete and at least one approval in this stage remains pending.
@@ -86,7 +86,7 @@ Stage completion is based on whether all required decisions have been recorded, 
 
 Approval stages are ordered by `stage_sequence`.
 
-The backend determines the current stage from the authoritative approval records:
+PostgreSQL determines the current stage from the authoritative approval records:
 
 ```text
 Stage 1 -> complete
@@ -116,7 +116,7 @@ current stage  -> decision allowed for pending approvals
 future stage   -> decision not allowed
 ```
 
-This rule is enforced by the backend rather than relying on the React UI. The UI exposes decision actions where appropriate for usability, but the backend remains authoritative for validating whether an approval can be acted upon.
+This rule is enforced at the PostgreSQL write boundary rather than relying on the React UI. PostgreSQL records a decision only when the specified approval belongs to the acquisition request, is still pending, and belongs to the current approval stage. The backend invokes the approval-decision operation, interprets its result, and maps that result to the appropriate API response.
 
 Approval decisions are recorded through:
 
@@ -161,21 +161,26 @@ React UI
    v
 REST API
    |
+   | HTTP input validation
    v
 Backend service
    |
-   | validates decision
-   | derives stage state
-   | determines stage progression
+   | invokes approval operation
+   | interprets database result
    v
 PostgreSQL
    |
    | authoritative approval records
+   | validates pending/current-stage eligibility
+   | records decision atomically
+   | derives current stage and stage state
    v
-Backend-derived stage state
+Backend service
    |
+   | exposes PostgreSQL-derived stage state
+   | maps operation result to API behavior
    v
 React UI
 ```
 
-The React UI handles presentation and user interaction. The API provides the contract between the client and backend. The backend owns approval validation and stage-state determination, while PostgreSQL stores the authoritative approval records from which that state is derived.
+The React UI handles presentation and user interaction. The API provides the contract between the client and backend and performs HTTP-boundary validation. The backend service invokes the PostgreSQL approval operation, interprets its result, and exposes PostgreSQL-derived stage state. PostgreSQL owns the authoritative approval records, current-stage determination, stage-state derivation, and persistent enforcement of the pending/current-stage approval-decision rule.

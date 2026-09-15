@@ -281,6 +281,78 @@ $do$;
 COMMENT ON FUNCTION public.get_approval_stage_state(INTEGER, INTEGER) IS
 'Derives the authoritative workflow state of an approval stage from the acquisition request''s approval records. Returns complete when the stage precedes the lowest stage containing a pending approval, current when it equals that stage, and future when it follows that stage. If no pending approvals remain, every existing stage is complete. The derived state is not stored separately.';
 
+
+/*
+ * Summary:
+ * Records an approval decision only when the approval belongs to the
+ * authoritative current approval stage.
+ *
+ * PostgreSQL owns enforcement of the persistent approval-stage write rule.
+ * The approval must:
+ *
+ *   - belong to the specified acquisition request,
+ *   - still have a pending decision, and
+ *   - belong to the current approval stage derived by
+ *     get_current_approval_stage_sequence().
+ *
+ * If any of those conditions are not satisfied, no row is updated and the
+ * function returns no rows.
+ *
+ * The function is created only when it does not already exist so the
+ * setup/update process remains safe to rerun.
+ */
+
+\echo Checking/creating approval decision function...
+
+DO $do$
+BEGIN
+    IF to_regprocedure(
+        'public.record_approval_decision(integer,integer,text,text)'
+    ) IS NULL THEN
+
+        EXECUTE $function$
+            CREATE FUNCTION public.record_approval_decision(
+                p_approval_id INTEGER,
+                p_acquisition_request_id INTEGER,
+                p_decision TEXT,
+                p_notes TEXT
+            )
+            RETURNS SETOF public.approvals
+            LANGUAGE plpgsql
+            AS $body$
+            BEGIN
+                RETURN QUERY
+                UPDATE public.approvals AS a
+                SET
+                    decision = p_decision,
+                    decided_at = CURRENT_TIMESTAMP,
+                    notes = p_notes
+                WHERE a.id = p_approval_id
+                  AND a.acquisition_request_id =
+                      p_acquisition_request_id
+                  AND a.decision = 'pending'
+                  AND a.stage_sequence =
+                      public.get_current_approval_stage_sequence(
+                          p_acquisition_request_id
+                      )
+                RETURNING a.*;
+            END;
+            $body$;
+        $function$;
+
+    END IF;
+END
+$do$;
+
+COMMENT ON FUNCTION public.record_approval_decision(
+    INTEGER,
+    INTEGER,
+    TEXT,
+    TEXT
+) IS
+'Records an individual approval decision only when the approval belongs to the specified acquisition request, is still pending, and belongs to the authoritative current approval stage. The current stage is derived by get_current_approval_stage_sequence(). Returns the updated approval row when successful and no rows when the decision cannot be recorded.';
+
+
 RESET ROLE;
 
 

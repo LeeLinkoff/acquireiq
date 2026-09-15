@@ -84,7 +84,7 @@ AcquireIQ therefore distinguishes between behavior explicitly defined by the cha
 
 The application implements the required request-status workflow through `PATCH /requests/:id/status`. Request status follows a fixed transition graph, invalid jumps are rejected, terminal states cannot be revived, and the operation is protected against concurrent writes.
 
-AcquireIQ also implements the challenge-required approval behavior. Multiple approvers can belong to the same `stage_sequence`, approval decisions can be recorded through the API, and the backend derives whether each stage is `current`, `complete`, or `future`. A current stage remains active until every approver at that stage has recorded a decision; once complete, the next incomplete stage becomes current. Future stages cannot accept decisions.
+AcquireIQ also implements the challenge-required approval behavior. Multiple approvers can belong to the same `stage_sequence`, approval decisions can be recorded through the API, and PostgreSQL derives whether each stage is `current`, `complete`, or `future` from the authoritative approval records. A current stage remains active until every approver at that stage has recorded a decision; once complete, the next incomplete stage becomes current through derived state. PostgreSQL permits an approval decision to be recorded only when the specified approval is still pending and belongs to the current approval stage.
 
 What AcquireIQ deliberately does **not** do is invent a relationship between approval-stage progression and request-status progression that the challenge does not specify.
 
@@ -96,7 +96,7 @@ stage_sequence 2 = in_review
 stage_sequence 3 = approved
 ```
 
-The React UI handles presentation and user interaction, the API provides the contract between the UI and backend, and the backend remains authoritative for approval validation and stage-state determination as well as the separate request-status state machine.
+The React UI handles presentation and user interaction, and the API provides the contract between the UI and backend. For approval decisions, the backend invokes PostgreSQL's authoritative approval operation, interprets its result, and exposes PostgreSQL-derived stage state. The API/service remains authoritative for the separate request-status transition graph.
 
 Broader approval-lifecycle rules remain intentionally undefined where the challenge provides no business rule, including approver assignment or reassignment and the effect of rejected or mixed decisions beyond satisfying the stated requirement that every approver at the current stage has recorded a decision.
 
@@ -365,7 +365,7 @@ POST   /assist/query
 
 The API avoids exposing generic CRUD operations merely because additional operations could be imagined from the data model. An API should represent understood business capabilities rather than simply expose every table.
 
-For approvals, AcquireIQ provides `PATCH /requests/:requestId/approvals/:approvalId/decision` because recording approval decisions and advancing once every approver at the current stage has recorded a decision are explicitly required behaviors. The route accepts the user action through the API contract, while the backend validates whether the approval belongs to the current stage and derives stage progression from the authoritative approval data. The implementation deliberately does not couple approval-stage progression to request-status progression because that relationship is not defined by the challenge.
+For approvals, AcquireIQ provides `PATCH /requests/:requestId/approvals/:approvalId/decision` because recording approval decisions and advancing once every approver at the current stage has recorded a decision are explicitly required behaviors. The route accepts the user action through the API contract, while the backend invokes PostgreSQL's authoritative approval operation and interprets its result. PostgreSQL enforces pending/current-stage eligibility and derives approval-stage progression from the authoritative approval records. The implementation deliberately does not couple approval-stage progression to request-status progression because that relationship is not defined by the challenge.
 
 ---
 
@@ -444,7 +444,7 @@ PostgreSQL is a good fit because the application contains strongly related domai
 
 Parallel approvals are represented by allowing multiple approval records to share the same `stage_sequence`. This avoids embedding individual approvers into request records and allows the approval chain to represent both sequential stages and parallel participants.
 
-The model intentionally does not persist a separate `current_stage` field. Approval-stage state is derived by the backend from `stage_sequence` and the recorded approval decisions. I consider deriving this state preferable to storing a separate mutable value because the underlying approval records already contain the information needed to determine the current stage. Persisting the same state separately would introduce another value that must be kept synchronized and could become inconsistent with the approval records. This derived stage progression remains independent of acquisition-request status because the challenge does not define a relationship between the two.
+The model intentionally does not persist a separate `current_stage` field. PostgreSQL derives approval-stage state from `stage_sequence` and the recorded approval decisions. I consider deriving this state preferable to storing a separate mutable value because the underlying approval records already contain the information needed to determine the current stage. Persisting the same state separately would introduce another value that must be kept synchronized and could become inconsistent with the approval records. This derived stage progression remains independent of acquisition-request status because the challenge does not define a relationship between the two.
 
 ---
 
@@ -464,7 +464,7 @@ This is another example of intentionally avoiding functionality that would requi
 
 The frontend is intentionally centered on one meaningful contracting-officer workflow rather than being expanded into a large multi-page application.
 
-The interface provides the required pipeline visibility, status grouping/filtering, request detail, approval-chain information including parallel groupings and backend-derived stage state, approval-decision actions for the current stage, contract/protest context, request-status advancement, and natural-language assisted search. The React UI handles presentation and user interaction, while the API provides the contract to backend services that remain authoritative for approval validation, stage-state determination, and request-status rules.
+The interface provides the required pipeline visibility, status grouping/filtering, request detail, approval-chain information including parallel groupings and PostgreSQL-derived stage state, approval-decision actions for the current stage, contract/protest context, request-status advancement, and natural-language assisted search. The React UI handles presentation and user interaction, while the API provides the contract to backend services. For approval decisions, PostgreSQL owns persistent pending/current-stage enforcement and stage-state derivation, while the backend owns API orchestration and result mapping. The API/service separately owns the request-status transition rules.
 
 Real API calls are used throughout the workflow. Loading and error conditions are represented explicitly, and successful status updates are reflected back into the UI rather than requiring a page reload.
 

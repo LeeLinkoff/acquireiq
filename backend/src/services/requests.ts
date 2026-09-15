@@ -178,9 +178,8 @@ export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
 /*
  * Describes every possible result of attempting to record an individual approval decision.
  *
- * The approval operation is separate from both acquisition-request status
- * and derived approval-stage progression. It records a decision only for the
- * specified approval belonging to the specified acquisition request.
+ * The approval operation is separate from acquisition-request status. Approval-stage progression is derived by PostgreSQL from the authoritative approval records.
+ * It records a decision only for the specified approval belonging to the specified acquisition request.
  *
  * Possible outcomes:
  *
@@ -196,6 +195,9 @@ export type AcquisitionRequestStatus = UpdateAcquisitionRequestStatus["status"];
  *   already_decided
  *     The approval already contains a recorded decision and cannot be decided again by this operation.
  *
+ *   stage_not_current
+ *     The approval belongs to a stage that is not the current approval stage.
+ *
  * A type alias is used because the operation can return one of several distinct result object shapes.
  */
 export type ApprovalDecisionResult =
@@ -205,7 +207,8 @@ export type ApprovalDecisionResult =
     }
   | { outcome: "request_not_found" }
   | { outcome: "approval_not_found" }
-  | { outcome: "already_decided" };
+  | { outcome: "already_decided" }
+  | { outcome: "stage_not_current" };  //The approval belongs to a stage that is not the current approval stage
   
 /*
  * Describes every possible result of attempting to move an acquisition request
@@ -756,63 +759,60 @@ export async function updateRequestStatus(
 /**
  * Records one individual approver's decision.
  *
- * This operation is independent of acquisition-request status and derived
- * approval-stage progression. It updates only the specified approval belonging
- * to the specified acquisition request.
+ * This operation is independent of acquisition-request status. PostgreSQL
+ * records the decision only when the specified approval belongs to the
+ * specified acquisition request, is still pending, and belongs to the
+ * authoritative current approval stage.
  *
- * Only a pending approval may be changed to approved or rejected. The approval
- * remains associated with its original stage so stage state can be derived
- * separately from the authoritative approval records.
+ * Approval-stage progression is derived from the authoritative approval
+ * records rather than stored separately.
  */
-export async function updateApprovalDecision(requestId: number, approvalId: number, input: UpdateAcquisitionApproval ): Promise<ApprovalDecisionResult>
+export async function updateApprovalDecision(requestId: number, approvalId: number, input: UpdateAcquisitionApproval): Promise<ApprovalDecisionResult>
 {
   /*
-   * Update only the specified pending approval.
+   * PostgreSQL owns authoritative enforcement of the approval-decision write.
    *
-   * The decision condition is part of the UPDATE itself so PostgreSQL
-   * atomically prevents an already-decided approval from being changed.
+   * record_approval_decision() records the decision only when the approval:
+   *
+   *   - belongs to the specified acquisition request,
+   *   - is still pending, and
+   *   - belongs to the current approval stage.
+   *
+   * Current-stage determination is performed by PostgreSQL from the
+   * authoritative approval records.
    */
   const updatedResult = await pool.query<AcquisitionApproval>(
     `
       WITH updated AS (
-        UPDATE approvals
-        SET
-          decision = $3,
-          decided_at = CURRENT_TIMESTAMP,
-          notes = $4
-        WHERE id = $1
-          AND acquisition_request_id = $2
-          AND decision = 'pending'
-        RETURNING
-          id,
-          approver_id AS "approverId",
-          stage_name AS "stageName",
-          stage_sequence AS "stageSequence",
-          decision,
-          decided_at AS "decidedAt",
-          notes
+        SELECT *
+        FROM public.record_approval_decision($1, $2, $3, $4)
       )
       SELECT
         updated.id,
-        updated."approverId",
+        updated.approver_id AS "approverId",
         u.name AS "approverName",
-        updated."stageName",
-        updated."stageSequence",
+        updated.stage_name AS "stageName",
+        updated.stage_sequence AS "stageSequence",
+        public.get_approval_stage_state(
+          updated.acquisition_request_id,
+          updated.stage_sequence
+        ) AS "stageState",
         updated.decision,
-        updated."decidedAt",
+        updated.decided_at AS "decidedAt",
         updated.notes
       FROM updated
       JOIN users u
-        ON u.id = updated."approverId"
+        ON u.id = updated.approver_id
     `,
     [approvalId, requestId, input.decision, input.notes ?? null]
   );
 
   /*
-   * A zero-row update means either the request/approval does not exist or
-   * the approval is no longer pending. Determine which result applies.
+   * A zero-row result means PostgreSQL rejected the write. 
+   * Determine the application-level reason so the route can return the appropriate response.
    */
-  if (updatedResult.rowCount === 0) {
+  if (updatedResult.rowCount === 0) 
+  {
     const requestResult = await pool.query(
       `
         SELECT 1
@@ -827,7 +827,7 @@ export async function updateApprovalDecision(requestId: number, approvalId: numb
       return { outcome: "request_not_found" };
     }
 
-    const approvalResult = await pool.query(
+    const approvalResult = await pool.query<{ decision: string }>(
       `
         SELECT decision
         FROM approvals
@@ -837,15 +837,25 @@ export async function updateApprovalDecision(requestId: number, approvalId: numb
       [approvalId, requestId]
     );
 
-    if (approvalResult.rowCount === 0) {
+    if (approvalResult.rowCount === 0)
+	{
       return { outcome: "approval_not_found" };
     }
 
-    return { outcome: "already_decided" };
+    if (approvalResult.rows[0].decision !== "pending")
+	{
+      return { outcome: "already_decided" };
+    }
+
+    return { outcome: "stage_not_current" };
   }
 
-  return { outcome: "updated", approval: updatedResult.rows[0] };
+  return {
+    outcome: "updated",
+    approval: updatedResult.rows[0]
+  };
 }
+
 
 /**
  * Searches acquisition requests using filters that have already passed the

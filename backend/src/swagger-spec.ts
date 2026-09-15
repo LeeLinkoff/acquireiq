@@ -395,7 +395,7 @@ const swaggerSpec = {
       patch: {
         tags: ["Acquisition Requests"],
         summary: "Record an approval decision",
-        description: "Records an approved or rejected decision for one individual approval. Approval-stage progression and acquisition request status are derived or managed separately.",
+        description: "Records an approved or rejected decision for one individual approval. PostgreSQL permits the decision only when the approval is pending and belongs to the current approval stage. Approval-stage progression is derived from the authoritative approval records, while acquisition request status is managed separately.",
         parameters: [
           {
             name: "requestId",
@@ -455,6 +455,36 @@ const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                },
+                examples: {
+                  invalidRequestId: {
+                    summary: "Invalid acquisition request ID",
+                    value: {
+                      ok: false,
+                      error: "Request id must be a positive integer."
+                    }
+                  },
+                  invalidApprovalId: {
+                    summary: "Invalid approval ID",
+                    value: {
+                      ok: false,
+                      error: "Approval id must be a positive integer."
+                    }
+                  },
+                  invalidDecision: {
+                    summary: "Invalid approval decision",
+                    value: {
+                      ok: false,
+                      error: "decision must be approved or rejected."
+                    }
+                  },
+                  invalidNotes: {
+                    summary: "Invalid approval notes",
+                    value: {
+                      ok: false,
+                      error: "notes must be a string or null."
+                    }
+                  }
                 }
               }
             }
@@ -465,16 +495,48 @@ const swaggerSpec = {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                },
+                examples: {
+                  requestNotFound: {
+                    summary: "Acquisition request not found",
+                    value: {
+                      ok: false,
+                      error: "Acquisition request not found."
+                    }
+                  },
+                  approvalNotFound: {
+                    summary: "Approval not found for acquisition request",
+                    value: {
+                      ok: false,
+                      error: "Approval not found for this acquisition request."
+                    }
+                  }
                 }
               }
             }
           },
           "422": {
-            description: "Approval decision has already been recorded",
+            description: "Approval decision violates approval workflow rules",
             content: {
               "application/json": {
                 schema: {
                   $ref: "#/components/schemas/ErrorResponse"
+                },
+                examples: {
+                  alreadyDecided: {
+                    summary: "Approval already decided",
+                    value: {
+                      ok: false,
+                      error: "Approval decision has already been recorded."
+                    }
+                  },
+                  stageNotCurrent: {
+                    summary: "Approval stage is not current",
+                    value: {
+                      ok: false,
+                      error: "Approval decision cannot be recorded because this approval is not in the current approval stage."
+                    }
+                  }
                 }
               }
             }

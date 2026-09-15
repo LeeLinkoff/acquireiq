@@ -2,7 +2,7 @@
 
 React and Vite frontend for AcquireIQ, a government IT acquisition pipeline application.
 
-The frontend provides the user-facing acquisition workflow experience and communicates with the AcquireIQ backend through the centralized API client. Presentation and user interaction remain client-side, while request-status rules, approval-decision validation, approval-stage determination, and persistence remain server-owned.
+The frontend provides the user-facing acquisition workflow experience and communicates with the AcquireIQ backend through the centralized API client. Presentation and user interaction remain client-side, while request-status rules remain application-owned and PostgreSQL derives approval-stage state and enforces approval-decision eligibility at the database write boundary.
 
 ## Technology
 
@@ -115,7 +115,7 @@ Request detail displays the acquisition information returned by the backend, inc
 - associated contract information when present
 - protest information when present
 
-Parallel grouping is a representation and display concern. The frontend presents the approval-stage state and decision eligibility provided by the backend and does not independently implement approval-stage advancement rules.
+Parallel grouping is a representation and display concern. The frontend presents the PostgreSQL-derived approval-stage state and decision eligibility exposed by the backend and does not independently implement approval-stage advancement rules.
 
 ## Status Updates
 
@@ -184,7 +184,7 @@ The backend remains authoritative for:
 
 - request validation
 - request-status transition rules
-- approval-decision validation and approval-stage progression
+- invoking PostgreSQL approval-decision operations and exposing PostgreSQL-derived approval-stage state
 - concurrency safety
 - PostgreSQL persistence
 - dashboard aggregation

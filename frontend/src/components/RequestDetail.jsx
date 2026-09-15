@@ -24,7 +24,7 @@ import '../styles/request-detail.css'
  * Defines which workflow actions the UI should offer for each current status.
  *
  * This mirrors the backend workflow only for presentation purposes. 
- * The backend remains authoritative and validates every requested transition,including approval requirements and concurrency protection.
+ * The backend remains authoritative for request-status transitions and concurrency protection, while PostgreSQL enforces approval-decision eligibility and derives approval-stage state.
  *
  * This configuration is defined outside RequestDetail because it is static.
  * It is static because it does not depend on component props or state and therefore does not need to be recreated each time the component renders.
@@ -119,7 +119,7 @@ export default function RequestDetail({ requestId, onRequestUpdated })
    * Requests a workflow transition and replaces the currently displayed request
    * with the updated record returned by the backend.
    *
-   * Workflow validity remains entirely server-owned. If the backend rejects the
+   * Request-status transition validity remains entirely server-owned. If the backend rejects the
    * transition, the existing request stays visible and the rejection is exposed
    * separately through statusError.
    */

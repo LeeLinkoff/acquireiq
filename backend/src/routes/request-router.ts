@@ -12,7 +12,7 @@
  *     middleware, mounts this router, installs centralized error handling,
  *     and starts the HTTP server.
  *
- *   request-routes.ts
+ *   request-router.ts
  *     Defines the acquisition-request HTTP endpoints. It reads and validates
  *     HTTP input, calls the appropriate request service functions, and
  *     translates service results into HTTP responses.
@@ -29,7 +29,7 @@
  *       app.use(requestsRouter)
  *                 |
  *                 v
- *       request-routes.ts
+ *       request-router.ts
  *
  *           router.get("/requests")
  *           router.get("/requests/:id")
@@ -335,7 +335,8 @@ router.patch(
 // PATCH /requests/:requestId/approvals/:approvalId/decision
 //
 // Records one approver's individual decision.
-// Approval-stage progression and acquisition request status are handled separately.
+// PostgreSQL permits the decision only for a pending approval in the current approval stage.
+// Acquisition request status remains a separate workflow.
 router.patch(
   "/requests/:requestId/approvals/:approvalId/decision",
   async (req: Request, res: Response, next: NextFunction) => {
@@ -420,6 +421,13 @@ router.patch(
         );
       }
 
+      if (result.outcome === "stage_not_current") {
+        throw new ApiError(
+          422,
+          "Approval decision cannot be recorded because this approval is not in the current approval stage."
+        );
+      }
+	  
       res.json({approval: result.approval});
     } catch (error) {
       next(error);

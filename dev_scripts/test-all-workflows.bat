@@ -16,7 +16,7 @@ rem ------------------------------------------------------------
 rem Locate PostgreSQL psql.exe
 rem
 rem PostgreSQL is not assumed to be on the Windows PATH. Use the same
-rem discovery approach as create-database.bat.
+rem discovery approach as setup-database.bat.
 rem ------------------------------------------------------------
 
 set "PSQL="
@@ -1208,6 +1208,123 @@ rem ============================================================
 
 for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" "%BASE%/this-route-does-not-exist"') do set "CODE=%%H"
 call :CHECK "Unknown API route" 404 "!CODE!"
+
+
+rem ============================================================
+rem APPROVAL-STAGE DECISION ENFORCEMENT
+rem
+rem Create an isolated request with two sequential approval
+rem stages and verify that a future-stage approval cannot be
+rem decided until the current stage has completed.
+rem ============================================================
+
+echo.
+echo ============================================================
+echo Testing approval-stage decision enforcement
+echo ============================================================
+
+set "PGPASSWORD=acquireUserPassword"
+set "APPROVAL_TEST_FILE=%TEMP%\acquireiq-approval-test.tmp"
+set "APPROVAL_TEST_REQUEST_ID="
+set "APPROVAL_STAGE1_ID="
+set "APPROVAL_STAGE2_ID="
+
+"!PSQL!" -X -h localhost -p 5432 -U acquireiq_app -d acquireiq -t -A -F "|" -v ON_ERROR_STOP=1 -c "WITH new_request AS (INSERT INTO acquisition_requests (title, description, requestor_id, status, priority, budget_ceiling, fiscal_year) VALUES ('Approval Stage Regression Test', 'Automated future-stage approval enforcement test.', 1, 'in_review', 'medium', 1000.00, 2027) RETURNING id), stage1 AS (INSERT INTO approvals (acquisition_request_id, approver_id, stage_name, stage_sequence) SELECT id, 4, 'Stage 1 Regression Test', 1 FROM new_request RETURNING id, acquisition_request_id), stage2 AS (INSERT INTO approvals (acquisition_request_id, approver_id, stage_name, stage_sequence) SELECT acquisition_request_id, 5, 'Stage 2 Regression Test', 2 FROM stage1 RETURNING id) SELECT stage1.acquisition_request_id, stage1.id, stage2.id FROM stage1 CROSS JOIN stage2;" > "%APPROVAL_TEST_FILE%" 2>&1
+
+if errorlevel 1 (
+    echo [FAIL] Create approval-stage regression fixture
+    type "%APPROVAL_TEST_FILE%"
+    echo.
+    set /a FAIL+=1
+    goto APPROVAL_STAGE_DONE
+)
+
+for /f "usebackq tokens=1,2,3 delims=|" %%A in ("%APPROVAL_TEST_FILE%") do (
+    set "APPROVAL_TEST_REQUEST_ID=%%A"
+    set "APPROVAL_STAGE1_ID=%%B"
+    set "APPROVAL_STAGE2_ID=%%C"
+)
+
+if not defined APPROVAL_TEST_REQUEST_ID (
+    echo [FAIL] Parse approval-stage regression fixture
+    type "%APPROVAL_TEST_FILE%"
+    echo.
+    set /a FAIL+=1
+    goto APPROVAL_STAGE_DONE
+)
+
+echo Approval test request ID: !APPROVAL_TEST_REQUEST_ID!
+echo Stage 1 approval ID: !APPROVAL_STAGE1_ID!
+echo Stage 2 approval ID: !APPROVAL_STAGE2_ID!
+
+rem ------------------------------------------------------------
+rem Stage 2 is future while Stage 1 remains pending.
+rem The decision must therefore be rejected.
+rem ------------------------------------------------------------
+
+for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!APPROVAL_TEST_REQUEST_ID!/approvals/!APPROVAL_STAGE2_ID!/decision" -H "Content-Type: application/json" -d "{\"decision\":\"approved\",\"notes\":\"Future-stage rejection regression test\"}"') do set "CODE=%%H"
+call :CHECK "Reject decision on future approval stage" 422 "!CODE!"
+
+rem Verify that the rejected operation did not mutate Stage 2.
+
+"!PSQL!" -X -h localhost -p 5432 -U acquireiq_app -d acquireiq -t -A -v ON_ERROR_STOP=1 -c "SELECT decision FROM approvals WHERE id = !APPROVAL_STAGE2_ID!;" > "%APPROVAL_TEST_FILE%" 2>&1
+
+set "APPROVAL_DECISION="
+
+for /f "usebackq tokens=*" %%A in ("%APPROVAL_TEST_FILE%") do (
+    set "APPROVAL_DECISION=%%A"
+)
+
+set /a TOTAL+=1
+if "!APPROVAL_DECISION!"=="pending" (
+    echo [PASS] Future-stage approval remains pending after rejected decision
+    set /a PASS+=1
+) else (
+    echo [FAIL] Future-stage approval mutated - expected pending, got !APPROVAL_DECISION!
+    set /a FAIL+=1
+)
+
+rem ------------------------------------------------------------
+rem Stage 1 is current and must accept its decision.
+rem ------------------------------------------------------------
+
+for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!APPROVAL_TEST_REQUEST_ID!/approvals/!APPROVAL_STAGE1_ID!/decision" -H "Content-Type: application/json" -d "{\"decision\":\"approved\",\"notes\":\"Complete current Stage 1\"}"') do set "CODE=%%H"
+call :CHECK "Accept decision on current approval stage" 200 "!CODE!"
+
+rem ------------------------------------------------------------
+rem Stage 1 is now complete, so PostgreSQL should derive Stage 2
+rem as the new current approval stage.
+rem ------------------------------------------------------------
+
+"!PSQL!" -X -h localhost -p 5432 -U acquireiq_app -d acquireiq -t -A -v ON_ERROR_STOP=1 -c "SELECT public.get_current_approval_stage_sequence(!APPROVAL_TEST_REQUEST_ID!);" > "%APPROVAL_TEST_FILE%" 2>&1
+
+set "CURRENT_APPROVAL_STAGE="
+
+for /f "usebackq tokens=*" %%A in ("%APPROVAL_TEST_FILE%") do (
+    set "CURRENT_APPROVAL_STAGE=%%A"
+)
+
+set /a TOTAL+=1
+if "!CURRENT_APPROVAL_STAGE!"=="2" (
+    echo [PASS] Approval workflow advanced to Stage 2
+    set /a PASS+=1
+) else (
+    echo [FAIL] Approval workflow - expected current Stage 2, got !CURRENT_APPROVAL_STAGE!
+    set /a FAIL+=1
+)
+
+rem ------------------------------------------------------------
+rem The same Stage 2 approval that was rejected while future
+rem must now succeed because Stage 2 is current.
+rem ------------------------------------------------------------
+
+for /f %%H in ('curl.exe -s -o "%TMP_BODY%" -w "%%{http_code}" -X PATCH "%BASE%/requests/!APPROVAL_TEST_REQUEST_ID!/approvals/!APPROVAL_STAGE2_ID!/decision" -H "Content-Type: application/json" -d "{\"decision\":\"approved\",\"notes\":\"Stage 2 now current\"}"') do set "CODE=%%H"
+call :CHECK "Accept Stage 2 decision after stage advancement" 200 "!CODE!"
+
+:APPROVAL_STAGE_DONE
+
+del /q "%APPROVAL_TEST_FILE%" >nul 2>&1
+set "PGPASSWORD="
 
 
 rem ------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Node.js, Express, TypeScript, and PostgreSQL backend for AcquireIQ, a government IT acquisition workflow application.
 
-The backend owns request validation, acquisition workflow rules, concurrency-safe request-status transitions, approval-decision validation and derived stage progression, PostgreSQL access, dashboard aggregation, and validation of AI-generated structured search filters. The browser never communicates directly with PostgreSQL or the LLM provider.
+The backend owns HTTP request validation, acquisition workflow orchestration, concurrency-safe request-status transitions, PostgreSQL access, dashboard aggregation, and validation of AI-generated structured search filters. PostgreSQL stores the authoritative approval records, derives approval-stage state, and enforces current-stage approval-decision integrity. The browser never communicates directly with PostgreSQL or the LLM provider.
 
 ## Technology
 
@@ -41,7 +41,7 @@ HTTP response
 
 `server.ts` is the application composition root, responsible for global middleware, mounting the category routers, centralized error handling, and application startup. 
 
-The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. Acquisition workflow logic, persistence behavior, concurrency-sensitive request-status transitions, approval-decision validation and derived stage progression, dashboard queries, and AI interpretation remain behind service boundaries.
+The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. Acquisition workflow orchestration, persistence access, concurrency-sensitive request-status transitions, dashboard queries, and AI interpretation remain behind service boundaries. For approval decisions, the backend service invokes PostgreSQL's authoritative approval operation, interprets its result, and exposes PostgreSQL-derived stage state through the API.
 
 PostgreSQL is the authoritative state store. The LLM is used only to interpret natural-language search requests into a structured filter. LLM output is treated as untrusted input, validated by the application, and translated into server-owned parameterized SQL. There is no direct LLM-to-database path.
 
@@ -102,7 +102,7 @@ protests
 
 Plain SQL is used rather than an ORM because the relational rules, constraints, indexes, and concurrency behavior are important parts of the application and should remain explicit.
 
-Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. The backend derives each stage as `future`, `current`, or `complete` from the authoritative approval records and advances to the next incomplete stage once every approver at the current stage has recorded a decision. Broader business rules not defined by the challenge, including special consequences for rejected or mixed decisions and any relationship between approval-stage progression and acquisition-request status, are deliberately not inferred.
+Parallel approvals are represented as individual `approvals` rows. Approvers working at the same workflow step share the same `stage_sequence`. PostgreSQL derives each stage as `future`, `current`, or `complete` from the authoritative approval records. Approval decisions are recorded only when the specified approval is still pending and belongs to the current approval stage, with that persistent workflow rule enforced at the PostgreSQL write boundary. Once every approver at the current stage has recorded a decision, the next incomplete stage becomes current through derived state rather than a separately persisted stage-progression value. Broader business rules not defined by the challenge, including special consequences for rejected or mixed decisions and any relationship between approval-stage progression and acquisition-request status, are deliberately not inferred.
 
 Status changes are business operations rather than arbitrary CRUD updates. Valid transitions are enforced by the application, and PostgreSQL transactions/concurrency controls protect the state used to make those decisions.
 
@@ -166,7 +166,7 @@ AcquireIQ exposes the following application endpoints:
 | `GET` | `/requests/:id` | Retrieve acquisition-request detail |
 | `POST` | `/requests` | Create an acquisition request |
 | `PATCH` | `/requests/:id/status` | Perform a validated, concurrency-safe status transition |
-| `PATCH` | `/requests/:requestId/approvals/:approvalId/decision` | Record an approval decision with backend validation of current-stage eligibility and derived stage progression |
+| `PATCH` | `/requests/:requestId/approvals/:approvalId/decision` | Record an approval decision with PostgreSQL enforcement of pending/current-stage eligibility and PostgreSQL-derived stage state |
 | `GET` | `/dashboard` | Return acquisition pipeline/dashboard aggregates |
 | `POST` | `/assist/query` | Interpret a natural-language request and return validated acquisition search results |
 
@@ -305,7 +305,7 @@ Schema generation runs before TypeScript compilation when required by the projec
 
 ## Testing
 
-The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation, approval-decision validation, and derived approval-stage progression, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
+The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation, approval-decision behavior, PostgreSQL-derived approval-stage progression and current-stage decision enforcement, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
 
 The concurrency regression verifies that two competing transitions against the same request produce exactly one HTTP 200 response and one HTTP 422 response, with the final persisted state reflecting the successful transition.
 
@@ -314,9 +314,9 @@ The AI adversarial checks include SQL-like and unsupported model output and veri
 Final verified backend regression result:
 
 ```text
-PASS: 106
+PASS: 111
 FAIL: 0
-TOTAL: 106
+TOTAL: 111
 ALL BACKEND REGRESSION TESTS PASSED.
 ```
 

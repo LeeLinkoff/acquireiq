@@ -12,7 +12,7 @@
  *     middleware, mounts this router along with the feature routers, installs
  *     centralized error handling, and starts the HTTP server.
  *
- *   api-routes.ts
+ *   api-router.ts
  *     Defines general API infrastructure endpoints such as backend health
  *     information and interactive API documentation.
  *
@@ -26,7 +26,7 @@
  *       app.use(apiRouter)
  *              |
  *              v
- *       api-routes.ts
+ *       api-router.ts
  *
  *           GET /api/health
  *           /api/docs

@@ -31,7 +31,7 @@ Apache / HTTPS
 
 The browser never communicates directly with PostgreSQL or the LLM provider.
 
-The React application communicates with the Node/Express API. Category routers handle endpoint-specific HTTP behavior, while backend services own acquisition business rules, workflow transitions, database access, dashboard aggregation, AI interpretation, and deterministic validation of AI-generated structured filters.
+The React application communicates with the Node/Express API. Category routers handle endpoint-specific HTTP behavior, while backend services own acquisition workflow orchestration, request-status business rules, database access, dashboard aggregation, AI interpretation, and deterministic validation of AI-generated structured search filters. PostgreSQL owns authoritative approval-stage derivation and persistent enforcement of current-stage approval-decision integrity.
 
 For AI-assisted search, the LLM interprets natural language and returns a structured filter. That filter returns to the API and is treated as untrusted input. Only after deterministic application validation may it influence a server-owned parameterized PostgreSQL query.
 
@@ -48,15 +48,15 @@ React UI
    v
 Node / Express API
    |
-   | validation + business rules
+   | HTTP validation + workflow orchestration
    v
 PostgreSQL
    |
-   | result
+   | persistence + database-enforced integrity
    v
 Node / Express API
    |
-   | JSON
+   | result mapping + JSON
    v
 React UI
 ```
@@ -126,7 +126,7 @@ HTTP response
 
 The category routers own endpoint-specific HTTP behavior, including request parsing and validation, service invocation, HTTP status selection, and response formatting. 
 
-Acquisition workflow logic, persistence behavior, request-status transition rules, approval-decision validation and stage-state determination, dashboard queries, and AI interpretation remain behind service boundaries.
+Acquisition workflow orchestration, persistence access, request-status transition rules, dashboard queries, and AI interpretation remain behind service boundaries. For approval decisions, the backend service invokes PostgreSQL's authoritative approval operation, interprets its result, and exposes PostgreSQL-derived current-stage and stage-state information through the API.
 
 This separation is useful beyond code organization. It keeps business logic independent of Express request/response objects and makes the important behavior easier to test.
 
@@ -151,7 +151,7 @@ protests
 
 The database is responsible for durable relational state and participates directly in correctness through transactions, constraints, and indexes.
 
-Parallel approvals are represented as separate approval records that may share the same `stage_sequence`. This allows multiple approvers to participate independently within the same approval stage. The backend derives each stage as `future`, `current`, or `complete` from the authoritative approval records and advances to the next incomplete stage once every approver at the current stage has recorded a decision. AcquireIQ deliberately does not infer broader business rules the challenge does not define, including special consequences for rejected or mixed decisions or any relationship between approval-stage progression and acquisition-request status.
+Parallel approvals are represented as separate approval records that may share the same `stage_sequence`. This allows multiple approvers to participate independently within the same approval stage. PostgreSQL derives each stage as `future`, `current`, or `complete` from the authoritative approval records. Approval decisions are recorded only when the specified approval is still pending and belongs to the current approval stage, with that rule enforced at the PostgreSQL write boundary. Once every approver at the current stage has recorded a decision, the next incomplete stage becomes current through derived state rather than a separately persisted progression value. AcquireIQ deliberately does not infer broader business rules the challenge does not define, including special consequences for rejected or mixed decisions or any relationship between approval-stage progression and acquisition-request status.
 
 Status transitions are not treated as arbitrary CRUD updates. The application owns the valid transition graph, while PostgreSQL transaction/concurrency mechanisms protect the state used to make the transition decision.
 
@@ -281,7 +281,7 @@ AcquireIQ-specific behavior is new:
 
 - PostgreSQL acquisition model
 - acquisition request APIs
-- parallel approval modeling, decision recording, backend validation, and derived stage progression
+- parallel approval modeling, PostgreSQL-enforced decision recording and stage-state derivation, and backend API orchestration
 - concurrency-safe status transitions
 - dashboard aggregation
 - AI structured-filter contract

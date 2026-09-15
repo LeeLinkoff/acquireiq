@@ -7,9 +7,7 @@
     "generate:schemas": "tsx scripts/generate-openapi-schemas.ts",
     "dev": "tsx watch src/server.ts",
     "build": "tsc --noEmit --pretty false && npm run generate:schemas && tsc",
-    "start": "node dist/server.js",
-    "migrate": "tsx scripts/migrate.ts",
-    "seed": "tsx scripts/seed.ts"
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
