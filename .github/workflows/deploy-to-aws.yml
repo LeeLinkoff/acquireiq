@@ -1,0 +1,198 @@
+name: Deploy to AWS
+
+# ============================================================
+# PURPOSE: Deploy AcquireIQ to AWS with Terraform. Separate from
+# deploy-to-vps.yml, which deploys to the Linode VPS.
+#
+# TRIGGER: manual only (Actions tab -> Deploy to AWS -> Run
+# workflow), so it never runs alongside deploy-to-vps.yml on a
+# push. To deploy on every push to main instead, add:
+#   push:
+#     branches: [main]
+#
+# ONE-TIME SETUP before the first run:
+#   1. From your PC, with AWS admin credentials:
+#        cd infra/bootstrap
+#        terraform init
+#        terraform apply
+#   2. Add repository secrets (Settings -> Secrets and variables
+#      -> Actions):
+#        AWS_ROLE_ARN        bootstrap output github_deploy_role_arn
+#        TF_STATE_BUCKET     bootstrap output tf_state_bucket
+#        DB_MASTER_PASSWORD  any strong password, letters and digits
+#        DB_APP_PASSWORD     any strong password, letters and digits
+#        OPENAI_API_KEY      your OpenAI key
+#      Passwords should be letters and digits only, because the
+#      app password goes inside the DATABASE_URL connection string.
+#
+# WHAT EACH RUN DOES:
+#   1. Logs in to AWS with GitHub OIDC (no stored AWS keys)
+#   2. Builds and pushes the backend and db-init images
+#   3. terraform apply (creates or updates all infrastructure)
+#   4. Runs the db-init task to create or update the schema
+#   5. Waits for the backend service to be healthy
+#   6. Builds the frontend, uploads it to S3, clears the cache
+#   7. Checks /api/health through CloudFront
+# ============================================================
+
+"on":
+  workflow_dispatch: {}
+
+# id-token: write lets the job request the OIDC token AWS trusts.
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two deploys at once against the same state.
+concurrency:
+  group: deploy-to-aws
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Terraform apply and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm required secrets are set
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing="$missing AWS_ROLE_ARN"
+          [ -z "${{ secrets.TF_STATE_BUCKET }}" ] && missing="$missing TF_STATE_BUCKET"
+          [ -z "${{ secrets.DB_MASTER_PASSWORD }}" ] && missing="$missing DB_MASTER_PASSWORD"
+          [ -z "${{ secrets.DB_APP_PASSWORD }}" ] && missing="$missing DB_APP_PASSWORD"
+          [ -z "${{ secrets.OPENAI_API_KEY }}" ] && missing="$missing OPENAI_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "Missing required repository secrets:$missing"
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Log in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Images are tagged with the commit SHA, so every deploy is
+      # traceable and Terraform sees a change to roll out.
+      - name: Build and push backend image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-backend:$IMAGE_TAG"
+          docker build -t "$IMAGE" backend
+          docker push "$IMAGE"
+
+      - name: Build and push db-init image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-db-init:$IMAGE_TAG"
+          docker build -t "$IMAGE" -f infra/db-init/Dockerfile .
+          docker push "$IMAGE"
+
+      # terraform_wrapper: false so "terraform output -raw" returns
+      # plain values that later steps can use.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform apply
+        working-directory: infra
+        env:
+          TF_VAR_image_tag: ${{ env.IMAGE_TAG }}
+          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
+          TF_VAR_db_app_password: ${{ secrets.DB_APP_PASSWORD }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+        run: terraform apply -input=false -auto-approve
+
+      - name: Read Terraform outputs
+        id: tf
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          for name in app_url frontend_bucket cloudfront_distribution_id ecs_cluster ecs_service db_init_task_definition ecs_subnets ecs_security_group ecs_assign_public_ip; do
+            echo "$name=$(terraform output -raw $name)" >> "$GITHUB_OUTPUT"
+          done
+
+      # RDS is private, so the schema is created from a task inside
+      # the VPC. Fails the deploy if the task exits non-zero.
+      - name: Create or update database schema
+        run: |
+          set -euo pipefail
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
+            --task-definition "${{ steps.tf.outputs.db_init_task_definition }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf.outputs.ecs_subnets }}],securityGroups=[${{ steps.tf.outputs.ecs_security_group }}],assignPublicIp=${{ steps.tf.outputs.ecs_assign_public_ip }}}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Started db-init task $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "ERROR: db-init task exited with code $EXIT_CODE."
+            echo "See CloudWatch log group /ecs/acquireiq-db-init for details."
+            exit 1
+          fi
+          echo "Database schema is up to date."
+
+      - name: Wait for backend service to be stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
+            --services "${{ steps.tf.outputs.ecs_service }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm install
+          npm run build
+          if [ ! -f "dist/index.html" ]; then
+            echo "ERROR: dist/index.html missing after build."
+            exit 1
+          fi
+
+      # Uploaded under acquireiq/ to match the Vite base path.
+      - name: Upload frontend and clear CloudFront cache
+        run: |
+          set -euo pipefail
+          aws s3 sync frontend/dist "s3://${{ steps.tf.outputs.frontend_bucket }}/acquireiq/" --delete
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.tf.outputs.cloudfront_distribution_id }}" \
+            --paths "/acquireiq/*"
+
+      - name: Verify health through CloudFront
+        run: |
+          set -euo pipefail
+          URL="${{ steps.tf.outputs.app_url }}"
+          HEALTH="${URL%/acquireiq/}/api/health"
+          for i in $(seq 1 20); do
+            if BODY=$(curl -sf "$HEALTH"); then
+              echo "Healthy: $BODY"
+              echo "App is live at $URL"
+              exit 0
+            fi
+            echo "Attempt $i/20: not healthy yet"
+            sleep 15
+          done
+          echo "ERROR: $HEALTH did not respond after deploy."
+          exit 1

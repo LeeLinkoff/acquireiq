@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AcquireIQ on AWS</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* VOICE work: a technical reference diagram for colleagues
+   IDEA an AWS architecture diagram: nested Cloud / Region / VPC / AZ / subnet boundaries with category-coloured service tiles
+   PICTURE the full deployment drawn as one diagram, numbered request path and lettered deploy path
+   COLOUR white ground, squid-ink #232F3E, AWS-style category tile colours, orange accent for the request path, blue for deploy
+   TYPE Inter 700 display + Inter
+   LAYOUT title and status across the top, diagram full width beneath, then flow legend in two columns, then component reference tables */
+:root{color-scheme:light dark;--bg:light-dark(#ffffff,#12161c);--ink:light-dark(#232f3e,#e6eaef);--muted:light-dark(#5b6675,#9aa5b3);--rule:light-dark(#d5dbe2,#2c3540);--panel:light-dark(#f5f7f9,#1a2029);--cloud:light-dark(#232f3e,#c9d2dc);--region:light-dark(#4a4a4a,#b8c0ca);--vpc:light-dark(#8c4fff,#b08cff);--az:light-dark(#8a96a5,#6d7a89);--subnet:light-dark(#e9f3e1,#1e2a1a);--subnetEdge:light-dark(#7aa116,#8fbf2a);--priv:light-dark(#e6f0fa,#16222e);--privEdge:light-dark(#4a4a4a,#b8c0ca);--boot:light-dark(#fff6e8,#2a2216);--bootEdge:light-dark(#d98b00,#e0a13a);--req:light-dark(#d55e00,#ff8a3d);--dep:light-dark(#0072b2,#56b4e9)}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Inter,system-ui,sans-serif;overflow-x:clip}
+.band{padding-block:clamp(24px,3.5vw,48px);padding-left:max(5vw,16px,env(safe-area-inset-left,0px));padding-right:max(5vw,16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:clamp(32px,4.4vw,48px);line-height:1.05;letter-spacing:-.02em;margin:0 0 10px;font-weight:700}
+.lede{max-width:70ch;margin:0;color:var(--muted)}
+.status{display:inline-block;margin-top:12px;padding:4px 10px;border:1px solid var(--bootEdge);border-radius:6px;font-size:14px;background:var(--boot)}
+.scroll{overflow-x:auto;margin-top:20px;border:1px solid var(--rule);border-radius:10px}
+#dia{display:block;width:100%;min-width:980px;height:auto}
+#dia text{font-family:Inter,system-ui,sans-serif;fill:var(--ink)}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
+h2{font-size:26px;line-height:1.15;letter-spacing:-.01em;margin:0 0 12px}
+h3{font-size:18px;margin:28px 0 8px}
+ol.flow{list-style:none;margin:0;padding:0}
+ol.flow li{display:grid;grid-template-columns:30px 1fr;gap:10px;padding:8px 0;border-top:1px solid var(--rule)}
+.k{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff}
+.k.r{background:var(--req)}.k.d{background:var(--dep)}
+.key{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:14px;color:var(--muted);margin-top:10px}
+.key span{display:inline-flex;align-items:center;gap:8px}
+.key i{display:inline-block;width:34px;border-top:3px solid var(--req)}
+.key i.dash{border-top:3px dashed var(--dep)}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{text-align:left;font-weight:600;font-size:14px;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--ink)}
+td{padding:10px;border-bottom:1px solid var(--rule);vertical-align:top}
+td:first-child{font-weight:600;width:22%}
+td:nth-child(2){width:40%}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:8px;vertical-align:-1px}
+code{font-size:.9em;background:var(--panel);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.note{font-size:14px;color:var(--muted);margin-top:14px}
+.warn{margin-top:14px;padding:12px 16px;border-left:5px solid #dd344c;background:light-dark(#fdecee,#2a1519);border-radius:6px;max-width:900px}
+.warn strong{display:block;margin-bottom:4px}
+.warn ol{margin:4px 0 0;padding-left:20px}
+@media(max-width:760px){.cols{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){table{font-size:14px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px;border-bottom:1px solid var(--rule)}.stack td{display:block;border:0;padding:3px 0;width:auto!important}.stack td::before{content:attr(data-l);display:block;font-size:12px;color:var(--muted);font-weight:500}}
+</style>
+</head>
+<body>
+
+<div class="band"><div class="wrap">
+  <h1>AcquireIQ on AWS</h1>
+  <p class="lede">How the app runs once <code>infra/main.tf</code> and <code>infra/bootstrap/main.tf</code> are applied: one HTTPS address in front, a private database behind, and a GitHub Actions workflow that builds and ships every release.</p>
+  <span class="status">Design from the Terraform files. Not yet deployed or tested against AWS.</span>
+  <div class="warn"><strong>Two major deficiencies, accepted for this demo</strong><ol><li><b>No API authentication.</b> Anyone with the URL can read, create and change acquisition requests and record approvals.</li><li><b>No rate limiting.</b> Anyone can flood the API, including the search endpoint that calls OpenAI. Set a monthly spending limit on the OpenAI key.</li></ol>Both must be added before this holds real data. Details are in the last section.</div>
+  <div class="scroll"><svg id="dia" viewBox="0 0 1240 790" role="img" aria-label="AWS architecture diagram of AcquireIQ"></svg></div>
+  <div class="key"><span><i></i>User request path, steps 1 to 6</span><span><i class="dash"></i>Deploy path, steps A to E</span></div>
+  <p class="hint">The API and the database each run in one zone, and AWS chooses which. The diagram shows one possible placement: the database could just as well be in Zone A's private subnet. On a narrow screen, scroll the diagram sideways.</p>
+</div></div>
+
+<div class="band" style="padding-top:0"><div class="wrap cols">
+  <div>
+    <h2>A visitor opens the app</h2>
+    <ol class="flow" id="req"></ol>
+  </div>
+  <div>
+    <h2>A release is deployed</h2>
+    <ol class="flow" id="dep"></ol>
+  </div>
+</div></div>
+
+<div class="band" style="padding-top:0"><div class="wrap">
+  <h2>Why some services sit outside the VPC</h2>
+  <p style="max-width:70ch;margin:0 0 12px">The VPC is the app's private network. Only things that need their own IP address in it go inside. Everything else is a service AWS runs itself and the app calls over HTTPS.</p>
+  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Where</th><th>Services</th><th>Why there, and what controls access</th></tr></thead><tbody>
+  <tr><td data-l="Where">Inside the VPC</td><td data-l="Services">Load balancer, API task, db-init task, RDS</td><td data-l="Why there, and what controls access">Each gets an IP address in the app's subnets. Security groups and route tables decide who can reach them.</td></tr>
+  <tr><td data-l="Where">Region, outside the VPC</td><td data-l="Services">S3, ECR, Secrets Manager, CloudWatch Logs, IAM</td><td data-l="Why there, and what controls access">Shared regional services run by AWS. They are not placed anywhere; the app calls them over HTTPS through the internet gateway. Access is controlled by IAM permissions, not network rules.</td></tr>
+  <tr><td data-l="Where">Global edge</td><td data-l="Services">CloudFront</td><td data-l="Why there, and what controls access">Runs in AWS edge locations worldwide, close to visitors. It reads the S3 bucket because the bucket policy allows only this distribution, and reaches the load balancer at its public address.</td></tr>
+  </tbody></table></div>
+  <p class="note">Optional VPC endpoints would give the VPC a private path to S3, ECR, Secrets Manager and CloudWatch so that traffic never crosses the internet. They are mainly useful with private subnets and no NAT gateway, and most have an hourly charge. Not needed for this demo.</p>
+</div></div>
+
+<div class="band" style="padding-top:0"><div class="wrap">
+  <h2>Why there is a load balancer with only one API task</h2>
+  <p style="max-width:70ch;margin:0 0 12px">With one API task the load balancer spreads nothing. Its job here is to give CloudFront one name that never changes, while the API's address changes every time ECS starts a new task. Addresses below are illustrative.</p>
+  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>When</th><th>API task address</th><th>What CloudFront points at</th></tr></thead><tbody>
+  <tr><td data-l="When">Monday, first deploy</td><td data-l="API task address"><code>10.20.0.37</code> (public <code>3.91.44.12</code>)</td><td data-l="What CloudFront points at"><code>acquireiq-1234567890.us-east-1.elb.amazonaws.com</code></td></tr>
+  <tr><td data-l="When">Wednesday, after a crash or new deploy</td><td data-l="API task address"><code>10.20.1.112</code> (public <code>54.210.8.77</code>). The old address is gone.</td><td data-l="What CloudFront points at">The same load balancer name. Nothing to update.</td></tr>
+  </tbody></table></div>
+  <h3>Who does what</h3>
+  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Who</th><th>Does what</th><th>Configured by</th></tr></thead><tbody>
+  <tr><td data-l="Who">AWS Fargate</td><td data-l="Does what">Gives each new API task a new IP address. Nobody picks it.</td><td data-l="Configured by">Automatic</td></tr>
+  <tr><td data-l="Who">ECS service</td><td data-l="Does what">Adds a new task's IP to the load balancer's target list when it starts, and removes the old IP when that task stops.</td><td data-l="Configured by"><code>load_balancer</code> block in <code>aws_ecs_service.backend</code></td></tr>
+  <tr><td data-l="Who">Load balancer</td><td data-l="Does what">Sends each request to whichever listed IP is passing health checks. It never changes any IP itself, and its own name stays fixed.</td><td data-l="Configured by"><code>aws_lb</code>, <code>aws_lb_target_group</code></td></tr>
+  <tr><td data-l="Who">CloudFront</td><td data-l="Does what">Always sends API calls to the load balancer's fixed name.</td><td data-l="Configured by"><code>domain_name = aws_lb.main.dns_name</code></td></tr>
+  </tbody></table></div>
+  <p class="note">Without a load balancer, CloudFront would point straight at the API's IP, and every crash or deploy would break the app until CloudFront was updated by hand. The load balancer also gives health checks and deploys without downtime. Its classic job, spreading load across several copies, starts automatically if <code>desired_count</code> is raised above 1.</p>
+</div></div>
+
+<div class="band" style="padding-top:0"><div class="wrap">
+  <h2>Every component and why it is there</h2>
+  <div id="ref"></div>
+  <h3>Major deficiencies, deliberately left out for this demo</h3>
+  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Item</th><th>Status</th><th>Consequence and safeguard</th></tr></thead><tbody>
+  <tr><td data-l="Item">API authentication</td><td data-l="Status">Not implemented. The backend has no login, session, token or API-key check.</td><td data-l="Consequence and safeguard">Anyone with the URL can read, create and change acquisition requests and record approvals. Acceptable for a demo with sample data only.</td></tr>
+  <tr><td data-l="Item">Rate limiting</td><td data-l="Status">Not implemented, in the code or in AWS.</td><td data-l="Consequence and safeguard">Someone could flood the API, including <code>/assist/query</code>, which calls OpenAI. Set a monthly spending limit in the OpenAI billing settings for this key, so the worst case is search stopping, not a surprise bill.</td></tr>
+  </tbody></table></div>
+  <p class="note">Tile colours use the Okabe-Ito colour-blind-safe palette, one colour per service category, and the diagram also separates things by line style and labels. Icons here are simplified drawings, not official AWS icons.</p>
+</div></div>
+
+<script>
+{
+const C={net:'#0072b2',cmp:'#e69f00',sto:'#009e73',db:'#56b4e9',sec:'#f0e442',mgt:'#cc79a7',ext:'#1a1a1a'};
+const DARK=new Set(['#e69f00','#56b4e9','#f0e442','#cc79a7']);
+const CAT=[['Networking',C.net],['Compute',C.cmp],['Storage',C.sto],['Database',C.db],['Security',C.sec],['Monitoring',C.mgt],['Outside AWS',C.ext]];
+const G={
+ globe:'<circle r="13" fill="none" stroke="currentColor" stroke-width="2.4"/><ellipse rx="5.5" ry="13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M-13 0H13M-11-7H11M-11 7H11" stroke="currentColor" stroke-width="1.8"/>',
+ lb:'<circle cx="-8" r="5" fill="currentColor"/><circle cx="10" cy="-10" r="4" fill="currentColor"/><circle cx="10" r="4" fill="currentColor"/><circle cx="10" cy="10" r="4" fill="currentColor"/><path d="M-4 0L7-10M-4 0H7M-4 0L7 10" stroke="currentColor" stroke-width="2"/>',
+ igw:'<rect x="-11" y="-13" width="22" height="26" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-4 0H9M5-4l4 4-4 4" stroke="currentColor" stroke-width="2.2" fill="none"/>',
+ box:'<path d="M0-14L13-7V7L0 14-13 7V-7Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-13-7L0 0 13-7M0 0V14" stroke="currentColor" stroke-width="2" fill="none"/>',
+ stack:'<rect x="-13" y="-13" width="26" height="7" rx="1.5" fill="currentColor"/><rect x="-13" y="-3.5" width="26" height="7" rx="1.5" fill="currentColor"/><rect x="-13" y="6" width="26" height="7" rx="1.5" fill="currentColor"/>',
+ bucket:'<path d="M-13-8L-9 13H9L13-8" fill="none" stroke="currentColor" stroke-width="2.4"/><ellipse cy="-8" rx="13" ry="4.5" fill="none" stroke="currentColor" stroke-width="2.4"/>',
+ db:'<ellipse cy="-9" rx="12" ry="4.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-12-9V9c0 6 24 6 24 0V-9M-12 0c0 6 24 6 24 0" fill="none" stroke="currentColor" stroke-width="2.4"/>',
+ key:'<circle cx="-6" cy="-4" r="7" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M-1 1L11 13M6 8l3-3M9 11l3-3" stroke="currentColor" stroke-width="2.6"/>',
+ shield:'<path d="M0-14L12-9V0c0 8-6 12-12 14C-6 12-12 8-12 0V-9Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-5 0l4 4 7-8" stroke="currentColor" stroke-width="2.4" fill="none"/>',
+ chart:'<path d="M-13 12H13M-13 12V-13" stroke="currentColor" stroke-width="2.2"/><path d="M-9 6L-3-2 3 3 11-9" stroke="currentColor" stroke-width="2.6" fill="none"/>',
+ user:'<circle cy="-6" r="6" fill="currentColor"/><path d="M-12 13c0-9 5-12 12-12s12 3 12 12Z" fill="currentColor"/>',
+ api:'<text text-anchor="middle" y="5" font-size="14" font-weight="700" style="fill:currentColor">API</text>',
+ code:'<text text-anchor="middle" y="5" font-size="15" font-weight="700" style="fill:currentColor">&lt;/&gt;</text>'
+};
+// tiles: id, x, y, colour, glyph, label lines, label side (b below, r right)
+const T=[
+ ['users',95,95,C.ext,'user',['Users','(browser)'],'b'],
+ ['openai',95,355,C.ext,'api',['OpenAI API','(external)'],'b'],
+ ['gh',95,670,C.ext,'code',['GitHub','Actions'],'b'],
+ ['cf',440,95,C.net,'globe',['CloudFront','distribution'],'r'],
+ ['igw',250,355,C.net,'igw',['Internet','gateway'],'b'],
+ ['alb',512,252,C.net,'lb',['Application','Load Balancer'],'r'],
+ ['be',390,355,C.cmp,'box',['API','ECS Fargate task :3002'],'b'],
+ ['init',640,355,C.cmp,'box',['db-init task','one-off, each deploy'],'b'],
+ ['rds',640,495,C.db,'db',['RDS PostgreSQL 17'],'b'],
+ ['s3fe',955,250,C.sto,'bucket',['S3 frontend bucket','React build'],'b'],
+ ['sec',850,380,C.sec,'key',['Secrets','Manager'],'b'],
+ ['role',980,380,C.sec,'shield',['IAM task','execution role'],'b'],
+ ['logs',915,485,C.mgt,'chart',['CloudWatch Logs'],'b'],
+ ['oidc',330,665,C.sec,'shield',['IAM OIDC provider','+ GitHub deploy role'],'r'],
+ ['ecr',560,665,C.cmp,'stack',['ECR repositories','backend, db-init'],'r'],
+ ['state',790,665,C.sto,'bucket',['S3 state bucket','Terraform state'],'r']
+];
+const tile=([id,x,y,c,g,l,side])=>{
+ const lab=side==='r'
+  ? l.map((t,i)=>`<text x="${x+36}" y="${y-4+i*18}" font-size="14" font-weight="${i?400:600}">${t}</text>`).join('')
+  : l.map((t,i)=>`<text x="${x}" y="${y+44+i*17}" text-anchor="middle" font-size="14" font-weight="${i?400:600}">${t}</text>`).join('');
+ return `<g><rect x="${x-26}" y="${y-26}" width="52" height="52" rx="8" fill="${c}" stroke="#1a1a1a" stroke-opacity=".35"/><g transform="translate(${x} ${y})" style="color:${DARK.has(c)?'#111':'#fff'}">${G[g]}</g>${lab}</g>`;
+};
+const box=(x,y,w,h,stroke,label,o={})=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${o.r??6}" fill="${o.fill||'none'}" stroke="${stroke}" stroke-width="${o.sw||1.6}" ${o.dash?`stroke-dasharray="${o.dash}"`:''}/>`+
+ `<text x="${o.end?x+w-12:x+12}" y="${y+20}" text-anchor="${o.end?'end':'start'}" font-size="13" font-weight="600" style="fill:${stroke}">${label}</text>`;
+const line=(pts,cls)=>`<path d="M${pts.map(p=>p.join(' ')).join('L')}" fill="none" stroke="var(--${cls})" stroke-width="2.4" ${cls==='dep'?'stroke-dasharray="7 5"':''} marker-end="url(#a-${cls})"/>`;
+const badge=(x,y,t,cls)=>`<circle cx="${x}" cy="${y}" r="11" fill="var(--${cls})" stroke="var(--bg)" stroke-width="3"/><text x="${x}" y="${y+4.5}" text-anchor="middle" font-size="12.5" font-weight="700" style="fill:#fff">${t}</text>`;
+const tag=(x,y,t,a='start')=>`<text x="${x}" y="${y}" font-size="12.5" text-anchor="${a}" style="fill:var(--muted)">${t}</text>`;
+
+const s=document.getElementById('dia');
+s.innerHTML=`<defs>${['req','dep'].map(k=>`<marker id="a-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10Z" fill="var(--${k})"/></marker>`).join('')}</defs>
+${box(190,20,890,755,'var(--cloud)','AWS Cloud',{sw:2})}
+${box(210,150,850,615,'var(--region)','Region us-east-1',{dash:'2 4'})}
+${box(250,185,520,375,'var(--vpc)','AcquireIQ VPC',{sw:2})}
+${box(270,215,235,340,'var(--az)','Availability Zone A',{dash:'4 4'})}
+${box(520,215,235,340,'var(--az)','Availability Zone B',{dash:'4 4',end:1})}
+${box(282,288,211,142,'var(--subnetEdge)','Public subnet',{fill:'var(--subnet)'})}
+${box(532,288,211,142,'var(--subnetEdge)','Public subnet',{fill:'var(--subnet)'})}
+${box(282,440,211,108,'var(--privEdge)','Private subnet',{fill:'var(--priv)',dash:'2 3'})}
+${box(532,440,211,108,'var(--privEdge)','Private subnet',{fill:'var(--priv)',dash:'2 3'})}
+${tag(387,482,'Spare. RDS requires two zones.','middle')}${tag(387,499,'Used for a standby copy, or if','middle')}${tag(387,516,'AWS moves the database here.','middle')}
+
+${box(790,185,250,375,'var(--az)','Regional services')}
+${box(250,595,790,160,'var(--bootEdge)','Created once by infra/bootstrap',{fill:'var(--boot)'})}
+${line([[121,95],[408,95]],'req')}
+${line([[470,95],[955,95],[955,218]],'req')}
+${line([[440,123],[440,252],[480,252]],'req')}
+${line([[512,280],[512,300],[390,300],[390,323]],'req')}
+${line([[418,368],[512,368],[512,495],[608,495]],'req')}
+${line([[362,355],[282,355]],'req')}
+${line([[218,355],[127,355]],'req')}
+${line([[672,355],[728,355],[728,495],[672,495]],'dep')}
+${line([[121,656],[298,656]],'dep')}
+${line([[121,672],[150,672],[150,722],[560,722],[560,697]],'dep')}
+${line([[121,686],[134,686],[134,742],[790,742],[790,697]],'dep')}
+${line([[95,638],[95,578],[1052,578],[1052,250],[987,250]],'dep')}
+${badge(265,95,1,'req')}${badge(720,95,2,'req')}${badge(440,138,3,'req')}${badge(450,300,4,'req')}${badge(562,495,5,'req')}${badge(170,355,6,'req')}
+${badge(230,656,'A','dep')}${badge(355,722,'B','dep')}${badge(470,742,'C','dep')}${badge(728,420,'D','dep')}${badge(1052,420,'E','dep')}
+${tag(720,82,'/acquireiq/* (cached)','middle')}
+${tag(452,170,'API paths')}
+${tag(265,82,'HTTPS','middle')}
+${T.map(tile).join('')}
+<text x="1098" y="60" font-size="13" font-weight="600">Tile colours</text>
+${CAT.map(([n,c],i)=>`<rect x="1098" y="${74+i*30}" width="20" height="20" rx="4" fill="${c}" stroke="#1a1a1a" stroke-opacity=".35"/><text x="1126" y="${89+i*30}" font-size="13">${n}</text>`).join('')}
+<text x="1098" y="310" font-size="13" font-weight="600">Lines</text>
+<path d="M1098 330H1140" stroke="var(--req)" stroke-width="3"/><text x="1148" y="334" font-size="13">Request</text>
+<path d="M1098 356H1140" stroke="var(--dep)" stroke-width="3" stroke-dasharray="7 5"/><text x="1148" y="360" font-size="13">Deploy</text>
+<text x="1098" y="394" font-size="13" font-weight="600">Subnets</text>
+<rect x="1098" y="406" width="36" height="18" rx="3" fill="var(--subnet)" stroke="var(--subnetEdge)" stroke-width="1.6"/><text x="1142" y="420" font-size="13">Public</text>
+<rect x="1098" y="434" width="36" height="18" rx="3" fill="var(--priv)" stroke="var(--privEdge)" stroke-width="1.6" stroke-dasharray="2 3"/><text x="1142" y="448" font-size="13">Private</text>`;
+
+const req=[
+ ['1','The browser loads <code>https://&lt;id&gt;.cloudfront.net/acquireiq/</code>. CloudFront terminates HTTPS and redirects any plain HTTP request.'],
+ ['2','Paths under <code>/acquireiq/</code> are the React build. CloudFront reads them from the private S3 bucket and caches them at the edge.'],
+ ['3','<code>/api/*</code>, <code>/requests*</code>, <code>/dashboard*</code> and <code>/assist/*</code> are sent uncached to the load balancer on port 80. The browser only ever sees one address.'],
+ ['4','The load balancer forwards to the API task on port 3002. Every 30 seconds it also calls <code>/api/health</code>. If that fails twice in a row, the task is marked unhealthy, and ECS stops it and starts a replacement. With only one task there is a gap of a minute or two: API calls fail (the load balancer answers 503), the React app retries each call twice, then shows <em>Backend unavailable</em>. The page itself still loads from S3. All of this is automatic, with nothing to set up.'],
+ ['5','The API queries PostgreSQL on port 5432 over TLS, connecting as <code>acquireiq_app</code>.'],
+ ['6','For natural-language search, the API calls the OpenAI API out through the internet gateway.']
+];
+const dep=[
+ ['A','The workflow logs in to AWS by trading GitHub\'s short-lived OIDC token for the deploy role. No AWS keys are stored in GitHub.'],
+ ['B','It builds the backend and db-init images and pushes them to ECR, tagged with the commit SHA.'],
+ ['C','It runs <code>terraform apply</code>, which locks and updates the state in the S3 state bucket and creates or changes everything else in the diagram.'],
+ ['D','It starts the db-init task inside the VPC, which creates or updates the schema in RDS. GitHub cannot reach the private database directly.'],
+ ['E','It builds the frontend, uploads it to the S3 frontend bucket, clears the CloudFront cache and checks <code>/api/health</code>.']
+];
+const li=(cls)=>([k,t])=>`<li><span class="k ${cls}">${k}</span><span>${t}</span></li>`;
+document.getElementById('req').innerHTML=req.map(li('r')).join('');
+document.getElementById('dep').innerHTML=dep.map(li('d')).join('');
+
+const R=[
+ ['Edge',C.net,[
+  ['CloudFront distribution','Default <code>*.cloudfront.net</code> certificate. Static files cached with the managed CachingOptimized policy. API paths uncached, forwarding all viewer headers except Host.','The single public HTTPS entry point. Serving the frontend and API from one origin avoids CORS and mixed-content problems and keeps the load balancer off the open internet.']
+ ]],
+ ['Network',C.net,[
+  ['AcquireIQ VPC','Its own network, <code>10.20.0.0/16</code>, across two Availability Zones.','Keeps the app separate from anything else in the AWS account.'],
+  ['Public subnets','<code>10.20.0.0/24</code> and <code>10.20.1.0/24</code>, one per zone, routed to the internet gateway. Hold the load balancer and, by default, the API and db-init tasks with public IPs.','Where anything that must reach or be reached from the internet lives. The tasks are still only reachable from the load balancer.'],
+  ['Private subnets','<code>10.20.10.0/24</code> and <code>10.20.11.0/24</code>, one per zone, with no route from the internet. Hold the database. Setting <code>use_nat_gateway = true</code> moves the tasks here too.','Puts the database where nothing on the internet can reach it, whatever its other settings say.'],
+  ['NAT gateway (optional)','Off by default. When on, one NAT gateway in the first public subnet gives private tasks outbound internet access.','Lets the API sit in a private subnet and still call OpenAI and pull images. Adds an hourly charge.'],
+  ['Internet gateway','Attached to the AcquireIQ VPC.','Lets the tasks reach OpenAI, ECR and Secrets Manager outbound. Nothing inbound reaches the tasks except through the load balancer.'],
+  ['Application Load Balancer','HTTP listener on port 80. IP target group on port 3002 with a health check on <code>/api/health</code>.','Spreads requests to healthy API tasks and gives CloudFront a stable address to forward API traffic to.'],
+  ['Security groups','<code>acquireiq-alb</code> allows port 80 from CloudFront\'s IP ranges only. <code>acquireiq-ecs</code> allows 3002 from the load balancer. <code>acquireiq-db</code> allows 5432 from the ECS group.','A one-way chain so each layer can only be reached from the layer in front of it.']
+ ]],
+ ['Compute',C.cmp,[
+  ['ECS cluster and API service','Cluster <code>acquireiq</code>. One Fargate task with 0.25 vCPU and 512 MB, running the image from <code>backend/Dockerfile</code>.','Runs the Node and Express API with no servers to patch. ECS restarts the task if it fails.'],
+  ['db-init task','One-off Fargate task from <code>postgres:17-alpine</code> carrying <code>setup-database.sql</code>. Started by the workflow on every deploy.','Creates or updates the schema and the app role from inside the VPC, since the database is private.']
+ ]],
+ ['Data',C.db,[
+  ['RDS for PostgreSQL','Version 17 on <code>db.t4g.micro</code>, 20 GB, single AZ, not publicly accessible. <code>skip_final_snapshot</code> is on.','The application\'s data store. Private so only the API and db-init tasks can connect.'],
+  ['S3 frontend bucket','Private bucket with all public access blocked. Readable only by this CloudFront distribution through origin access control. Files live under <code>acquireiq/</code>.','Holds the built React files that CloudFront serves.']
+ ]],
+ ['Security and secrets',C.sec,[
+  ['Secrets Manager','Four secrets: <code>DATABASE_URL</code>, <code>OPENAI_API_KEY</code>, <code>DB_MASTER_PASSWORD</code>, <code>DB_APP_PASSWORD</code>.','Keeps credentials out of the image and task definition. ECS injects them as environment variables when a task starts.'],
+  ['IAM task execution role','AWS managed ECS execution policy plus read access to the four secrets only.','Lets ECS pull images, write logs and read secrets on the tasks\' behalf.'],
+  ['IAM OIDC provider and deploy role','Trusts GitHub tokens from <code>LeeLinkoff/acquireiq</code> on <code>main</code> only. Currently has AdministratorAccess.','Lets the workflow act in AWS without stored keys. The broad permission is a known gap to narrow later.']
+ ]],
+ ['Operations',C.mgt,[
+  ['CloudWatch Logs','Log groups <code>/ecs/acquireiq-backend</code> and <code>/ecs/acquireiq-db-init</code>, kept 14 days.','Where to look first when the API or a schema update fails.']
+ ]],
+ ['Created once by the bootstrap',C.sto,[
+  ['S3 state bucket','Versioned, encrypted, public access blocked, protected from <code>terraform destroy</code>. Locked during applies with Terraform\'s S3 lockfile.','Stores Terraform\'s record of what exists, so every workflow run picks up where the last left off.'],
+  ['ECR repositories','<code>acquireiq-backend</code> and <code>acquireiq-db-init</code>.','Private registries the workflow pushes images to before Terraform references them.']
+ ]],
+ ['Outside AWS',C.ext,[
+  ['GitHub Actions','Workflow <code>deploy-to-aws.yml</code>, started by hand from the Actions tab.','Builds, applies Terraform, sets up the database and ships the frontend in one run.'],
+  ['OpenAI API','Called by the API with the key from Secrets Manager.','Interprets natural-language search into structured filters.']
+ ]]
+];
+document.getElementById('ref').innerHTML=R.map(([g,c,rows])=>`<h3><span class="sw" style="background:${c}"></span>${g}</h3><div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Component</th><th>In this setup</th><th>Purpose</th></tr></thead><tbody>${rows.map(r=>`<tr><td data-l="Component">${r[0]}</td><td data-l="In this setup">${r[1]}</td><td data-l="Purpose">${r[2]}</td></tr>`).join('')}</tbody></table></div>`).join('');
+}
+</script>
+</body>
+</html>

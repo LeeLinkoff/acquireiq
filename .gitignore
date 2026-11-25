@@ -72,3 +72,8 @@ dev_reports/
 
 dist-ssr/
 *.local
+
+
+infra/**/.terraform/
+infra/**/*.tfstate*
+infra/**/*.tfvars

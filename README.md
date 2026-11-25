@@ -1,6 +1,6 @@
 # AcquireIQ
 
-AI-assisted government IT acquisition pipeline tracker built for the iAdeptive Full-Stack Engineering Lead Challenge.
+AI-assisted government IT acquisition pipeline tracker.
 
 ## Overview
 
@@ -279,6 +279,7 @@ acquireiq/
 +-- README.md
 +-- REQUIREMENTS_TO_DESIGN_VERIFICATION.md
 +-- REQUEST_STATUS_STATE_MACHINE.md
++-- APPROVAL_STAGE_STATE_MACHINE.md
 ```
 
 ------------------------------------------------------------------------

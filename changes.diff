@@ -1,0 +1,2429 @@
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..3fd9ec8
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1,2 @@
++*.bat text eol=crlf
++*.sh text eol=lf
+\ No newline at end of file
+diff --git a/.github/workflows/code-checks.yml b/.github/workflows/code-checks.yml
+index 9bbe17a..c41d072 100644
+--- a/.github/workflows/code-checks.yml
++++ b/.github/workflows/code-checks.yml
+@@ -1,15 +1,13 @@
+ name: Code Checks (type-check + boot test)
+ 
+ # ============================================================
+-# PURPOSE: Confirm the backend is sound. Does NOT touch the VPS
+-# and does NOT deploy anything. This is a pass/fail gate only.
++# PURPOSE: Check the frontend build, backend types, and backend
++# startup/database access. Does not deploy or contact the VPS.
+ #
+ # TRIGGERS: automatically, on every push to main AND every pull
+ # request targeting main; also runnable by hand from the GitHub
+-# Actions tab (workflow_dispatch), useful after clearing run
+-# history, since a workflow with no runs and no workflow_dispatch
+-# disappears from the Actions sidebar entirely. Runs on GitHub's
+-# disposable runner, never on your VPS.
++# Actions tab (workflow_dispatch). Runs on GitHub's disposable
++# runner, never on your VPS.
+ # ============================================================
+ #
+ # Three jobs. frontend-build is independent and listed first; the
+@@ -19,59 +17,37 @@ name: Code Checks (type-check + boot test)
+ #      build (npm run build), and confirms dist/index.html actually
+ #      got created. Independent of the other two jobs, runs in
+ #      parallel, not sequentially after them.
+-#   2. type-check — regenerates schemas.generated.ts (swagger-spec.ts
+-#      imports it, it doesn't exist in a fresh checkout otherwise),
++#   2. type-check — regenerates schemas.generated.ts from the current
++#      TypeScript contracts (swagger-spec.ts imports it),
+ #      then confirms the full backend type-checks cleanly under
+ #      strict: true (npx tsc --noEmit). Stronger than a plain-JS
+ #      syntax check: this catches real type errors, not just parse
+ #      errors. No secrets needed, always runs.
+-#   3. boot-test     — installs deps, confirms they actually
+-#      installed, regenerates schemas.generated.ts, compiles
+-#      (npm run build), boots the compiled server (dist/server.js,
+-#      the same artifact Docker/production actually runs), and
+-#      checks the actual response BODY of /api/health (not just an
+-#      HTTP 2xx), /api/docs, plus confirms /api/verify returns 400
+-#      on a request with no image. services/extraction.ts and
+-#      services/matching.ts are both implemented now, extraction
+-#      calls a real OpenAI vision model, so this job's own missing-
+-#      image check exercises real validation logic, not a stub. It
+-#      still does NOT exercise the real vision call end to end
+-#      (that needs an OPENAI_API_KEY secret here plus a real test
+-#      label image); add a real eval-harness job for that later,
+-#      same pattern as insight-engine-rag's eval-harness job checks
+-#      for OPENAI_API_KEY before running.
++#   3. boot-test — initializes a disposable PostgreSQL database with
++#      scripts/setup-database.sql, installs deps, regenerates schemas,
++#      compiles (npm run build), and boots dist/server.js. Checks
++#      /api/health's JSON body, /api/docs, and a database-backed
++#      GET /requests. No seed data or OpenAI key is needed for these
++#      checks. This is a startup/database smoke test, not the full
++#      backend regression suite or a live AI integration test.
+ #
+ # Every multi-line `run:` block below uses `set -euo pipefail`, not
+ # just `set -e`: `-u` fails loudly on an unset variable instead of
+ # silently treating it as empty, and `-o pipefail` makes a failure
+ # anywhere in a piped command fail the whole step instead of only
+-# reflecting the exit code of the last command in the pipe. This is
+-# the same standard used in deploy-to-vps.yml.
+-#
+-# NOTE: There is still no eval harness job here. services/extraction.ts
+-# and services/matching.ts are now implemented (they no longer throw
+-# "not implemented"), so this is no longer blocked on the logic not
+-# existing, it's just not built yet. Add one the same way
+-# insight-engine-rag's ci.yml does: gate on an OPENAI_API_KEY secret,
+-# boot the server, run a fixed set of test labels through /api/verify,
+-# and assert on expected match/no-match results per field.
++# reflecting the exit code of the last command in the pipe.
+ #
+ # RELATIONSHIP TO deploy-to-vps.yml: deploy-to-vps.yml's own
+-# verify-build job re-runs a similar (not identical) set of checks
+-# as a final gate immediately before touching the VPS. That overlap
+-# is deliberate, not a mistake, this file is the fast day-to-day
+-# check on every push/PR, deploy-to-vps.yml's copy is a last-line
+-# check right before production changes.
++# verify-build job runs independently. A failure in this workflow
++# does not block that separate deployment workflow. The deployment
++# workflow still contains unadapted template configuration.
+ 
+ "on":
+   push:
+     branches: [main]
+   pull_request:
+     branches: [main]
+-  # Without this, the workflow only shows in the Actions sidebar
+-  # while at least one run exists. Clear the run history with no
+-  # workflow_dispatch defined and the workflow disappears entirely,
+-  # with no way to trigger it manually until the next real push.
++  # Allow a manual check without requiring a new push.
+   workflow_dispatch: {}
+ 
+ jobs:
+@@ -119,17 +95,14 @@ jobs:
+ 
+       - name: Install dependencies
+         # Full install, not --omit=dev: typescript, @types/*, and the
+-        # OpenAPI schema generator (ts-json-schema-generator, ts-node)
++        # OpenAPI schema generator (ts-json-schema-generator, tsx)
+         # are all devDependencies, needed here to type-check and to
+         # generate schemas.generated.ts.
+         run: npm install
+ 
+       - name: Generate OpenAPI schemas
+-        # swagger-spec.ts imports ./schemas.generated, which doesn't
+-        # exist in a fresh checkout, it's a build artifact (see
+-        # scripts/generate-openapi-schemas.ts). Without this step,
+-        # the next step fails on a missing module, not a real type
+-        # error.
++        # Regenerate the checked-in schema module from current TypeScript
++        # contracts before checking swagger-spec.ts and its imports.
+         run: npm run generate:schemas
+ 
+       - name: Type-check entire backend (no output emitted)
+@@ -138,6 +111,23 @@ jobs:
+   boot-test:
+     name: Boot test (live server, compiled output)
+     runs-on: ubuntu-latest
++    # These credentials are fixtures for this disposable CI database only.
++    services:
++      postgres:
++        image: postgres:17
++        env:
++          POSTGRES_PASSWORD: acquireiq_ci_admin
++          POSTGRES_DB: postgres
++        ports:
++          - 5432:5432
++        options: >-
++          --health-cmd "pg_isready -U postgres -d postgres"
++          --health-interval 5s
++          --health-timeout 5s
++          --health-retries 12
++    env:
++      PORT: 3002
++      DATABASE_URL: postgresql://acquireiq_app:acquireiq_ci_app@127.0.0.1:5432/acquireiq
+     defaults:
+       run:
+         working-directory: backend
+@@ -149,6 +139,21 @@ jobs:
+         with:
+           node-version: '20'
+ 
++      - name: Initialize disposable AcquireIQ database
++        env:
++          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
++        run: |
++          set -euo pipefail
++          docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d postgres
++          # Precreate the application role with CI-only credentials. The
++          # unchanged bootstrap skips role creation when the role exists.
++          docker exec "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
++            -c "CREATE ROLE acquireiq_app LOGIN PASSWORD 'acquireiq_ci_app';"
++          # psql is required: the bootstrap creates the database, uses
++          # backslash commands, reconnects, and changes the active role.
++          docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
++            < scripts/setup-database.sql
++
+       - name: Install dependencies
+         run: npm install
+ 
+@@ -170,8 +175,6 @@ jobs:
+           echo "Dependencies confirmed installed."
+ 
+       - name: Start server in background
+-        env:
+-          PORT: 3002
+         run: |
+           set -euo pipefail
+           npm run generate:schemas
+@@ -183,10 +186,16 @@ jobs:
+         run: |
+           set -euo pipefail
+           for i in $(seq 1 20); do
+-            if curl -sf http://127.0.0.1:3002/api/health > /dev/null; then
++            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
++              echo "ERROR: Backend process exited before becoming healthy."
++              cat server.log
++              exit 1
++            fi
++            if curl --connect-timeout 2 --max-time 5 -sf http://127.0.0.1:3002/api/health > /dev/null; then
+               echo "Server is up"
+               exit 0
+             fi
++            echo "Waiting for backend health ($i/20)..."
+             sleep 1
+           done
+           echo "Server did not become healthy in time"
+@@ -200,11 +209,11 @@ jobs:
+         # Check the actual body, not just the status code.
+         run: |
+           set -euo pipefail
+-          BODY=$(curl -sf http://127.0.0.1:3002/api/health)
++          BODY=$(curl --connect-timeout 2 --max-time 5 -sf http://127.0.0.1:3002/api/health)
+           echo "Response body: $BODY"
+-          OK=$(echo "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok===true)}catch(e){console.log('false')}})")
++          OK=$(echo "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const body=JSON.parse(d);console.log(body.ok===true && body.service==='acquireiq-backend')}catch(e){console.log('false')}})")
+           if [ "$OK" != "true" ]; then
+-            echo "ERROR: /api/health responded but body did not report ok:true."
++            echo "ERROR: /api/health did not report ok:true for acquireiq-backend."
+             exit 1
+           fi
+           echo "/api/health body confirmed ok:true."
+@@ -212,45 +221,40 @@ jobs:
+       - name: Confirm Swagger docs respond
+         run: |
+           set -euo pipefail
+-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:3002/api/docs)
++          STATUS=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:3002/api/docs)
+           if [ "$STATUS" != "200" ]; then
+             echo "Expected 200 from /api/docs, got $STATUS"
+             exit 1
+           fi
+           echo "/api/docs confirmed 200."
+ 
+-      - name: Confirm /api/verify rejects a request with no image
+-        # /api/verify is now implemented (services/extraction.ts and
+-        # services/matching.ts no longer throw "not implemented").
+-        # This step used to just check for "any non-200" as a stub
+-        # sanity check; now that there's real validation, assert the
+-        # specific expected code: 400, from server.ts's own check for
+-        # a missing labelImage. This still catches the same class of
+-        # regression the old check did (a silent, accidental 200 with
+-        # no real data), just with a tighter, now-meaningful assertion
+-        # instead of a placeholder one.
+-        #
+-        # This deliberately does NOT exercise the real vision call
+-        # (that would need OPENAI_API_KEY as a secret here, and a real
+-        # test label image checked into the repo or fetched at
+-        # runtime). Only the pre-extraction validation path is
+-        # covered. Add a real eval harness job (boot server, POST an
+-        # actual label through /api/verify, assert on expected
+-        # match/no-match per field) once you're ready to wire up that
+-        # secret, same pattern as insight-engine-rag's eval-harness job.
++      - name: Confirm acquisition requests can be read from PostgreSQL
++        # /api/health is a liveness check and does not query the database.
++        # GET /requests exercises the application's database connection,
++        # role permissions, and initialized schema without needing seed data.
+         run: |
+           set -euo pipefail
+-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3002/api/verify)
+-          if [ "$STATUS" != "400" ]; then
+-            echo "Expected 400 (missing labelImage) from /api/verify with no body, got $STATUS"
+-            exit 1
+-          fi
+-          echo "/api/verify confirmed 400 on missing labelImage."
++          curl --connect-timeout 2 --max-time 10 -sf http://127.0.0.1:3002/requests \
++            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{if(!Array.isArray(JSON.parse(d)))throw new Error('Expected a requests array');console.log('/requests confirmed a database-backed JSON array.')}catch(e){console.error(e);process.exitCode=1}})"
++          kill -0 "$(cat server.pid)"
+ 
+       - name: Show server log on failure
+         if: failure()
+-        run: cat server.log
++        run: |
++          set -euo pipefail
++          if [ -f server.log ]; then
++            cat server.log
++          else
++            echo "Backend log is unavailable; failure occurred before server startup."
++          fi
+ 
+       - name: Stop server
+         if: always()
+-        run: kill "$(cat server.pid)" 2>/dev/null || true
++        run: |
++          set -euo pipefail
++          if [ -f server.pid ]; then
++            PID=$(cat server.pid)
++            if kill -0 "$PID" 2>/dev/null; then
++              kill "$PID"
++            fi
++          fi
+diff --git a/.github/workflows/deploy-to-aws.yml b/.github/workflows/deploy-to-aws.yml
+new file mode 100644
+index 0000000..ce49b9a
+--- /dev/null
++++ b/.github/workflows/deploy-to-aws.yml
+@@ -0,0 +1,198 @@
++name: Deploy to AWS
++
++# ============================================================
++# PURPOSE: Deploy AcquireIQ to AWS with Terraform. Separate from
++# deploy-to-vps.yml, which deploys to the Linode VPS.
++#
++# TRIGGER: manual only (Actions tab -> Deploy to AWS -> Run
++# workflow), so it never runs alongside deploy-to-vps.yml on a
++# push. To deploy on every push to main instead, add:
++#   push:
++#     branches: [main]
++#
++# ONE-TIME SETUP before the first run:
++#   1. From your PC, with AWS admin credentials:
++#        cd infra/bootstrap
++#        terraform init
++#        terraform apply
++#   2. Add repository secrets (Settings -> Secrets and variables
++#      -> Actions):
++#        AWS_ROLE_ARN        bootstrap output github_deploy_role_arn
++#        TF_STATE_BUCKET     bootstrap output tf_state_bucket
++#        DB_MASTER_PASSWORD  any strong password, letters and digits
++#        DB_APP_PASSWORD     any strong password, letters and digits
++#        OPENAI_API_KEY      your OpenAI key
++#      Passwords should be letters and digits only, because the
++#      app password goes inside the DATABASE_URL connection string.
++#
++# WHAT EACH RUN DOES:
++#   1. Logs in to AWS with GitHub OIDC (no stored AWS keys)
++#   2. Builds and pushes the backend and db-init images
++#   3. terraform apply (creates or updates all infrastructure)
++#   4. Runs the db-init task to create or update the schema
++#   5. Waits for the backend service to be healthy
++#   6. Builds the frontend, uploads it to S3, clears the cache
++#   7. Checks /api/health through CloudFront
++# ============================================================
++
++"on":
++  workflow_dispatch: {}
++
++# id-token: write lets the job request the OIDC token AWS trusts.
++permissions:
++  id-token: write
++  contents: read
++
++# Never run two deploys at once against the same state.
++concurrency:
++  group: deploy-to-aws
++  cancel-in-progress: false
++
++env:
++  AWS_REGION: us-east-1
++  IMAGE_TAG: ${{ github.sha }}
++
++jobs:
++  deploy:
++    name: Terraform apply and deploy
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Confirm required secrets are set
++        run: |
++          set -euo pipefail
++          missing=""
++          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing="$missing AWS_ROLE_ARN"
++          [ -z "${{ secrets.TF_STATE_BUCKET }}" ] && missing="$missing TF_STATE_BUCKET"
++          [ -z "${{ secrets.DB_MASTER_PASSWORD }}" ] && missing="$missing DB_MASTER_PASSWORD"
++          [ -z "${{ secrets.DB_APP_PASSWORD }}" ] && missing="$missing DB_APP_PASSWORD"
++          [ -z "${{ secrets.OPENAI_API_KEY }}" ] && missing="$missing OPENAI_API_KEY"
++          if [ -n "$missing" ]; then
++            echo "Missing required repository secrets:$missing"
++            exit 1
++          fi
++          echo "All required secrets are present."
++
++      - name: Log in to AWS
++        uses: aws-actions/configure-aws-credentials@v4
++        with:
++          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
++          aws-region: ${{ env.AWS_REGION }}
++
++      - name: Log in to ECR
++        id: ecr
++        uses: aws-actions/amazon-ecr-login@v2
++
++      # Images are tagged with the commit SHA, so every deploy is
++      # traceable and Terraform sees a change to roll out.
++      - name: Build and push backend image
++        run: |
++          set -euo pipefail
++          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-backend:$IMAGE_TAG"
++          docker build -t "$IMAGE" backend
++          docker push "$IMAGE"
++
++      - name: Build and push db-init image
++        run: |
++          set -euo pipefail
++          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-db-init:$IMAGE_TAG"
++          docker build -t "$IMAGE" -f infra/db-init/Dockerfile .
++          docker push "$IMAGE"
++
++      # terraform_wrapper: false so "terraform output -raw" returns
++      # plain values that later steps can use.
++      - uses: hashicorp/setup-terraform@v3
++        with:
++          terraform_wrapper: false
++
++      - name: Terraform init
++        working-directory: infra
++        run: terraform init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
++
++      - name: Terraform apply
++        working-directory: infra
++        env:
++          TF_VAR_image_tag: ${{ env.IMAGE_TAG }}
++          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
++          TF_VAR_db_app_password: ${{ secrets.DB_APP_PASSWORD }}
++          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
++        run: terraform apply -input=false -auto-approve
++
++      - name: Read Terraform outputs
++        id: tf
++        working-directory: infra
++        run: |
++          set -euo pipefail
++          for name in app_url frontend_bucket cloudfront_distribution_id ecs_cluster ecs_service db_init_task_definition ecs_subnets ecs_security_group ecs_assign_public_ip; do
++            echo "$name=$(terraform output -raw $name)" >> "$GITHUB_OUTPUT"
++          done
++
++      # RDS is private, so the schema is created from a task inside
++      # the VPC. Fails the deploy if the task exits non-zero.
++      - name: Create or update database schema
++        run: |
++          set -euo pipefail
++          TASK_ARN=$(aws ecs run-task \
++            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
++            --task-definition "${{ steps.tf.outputs.db_init_task_definition }}" \
++            --launch-type FARGATE \
++            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf.outputs.ecs_subnets }}],securityGroups=[${{ steps.tf.outputs.ecs_security_group }}],assignPublicIp=${{ steps.tf.outputs.ecs_assign_public_ip }}}" \
++            --query 'tasks[0].taskArn' --output text)
++          echo "Started db-init task $TASK_ARN"
++          aws ecs wait tasks-stopped --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN"
++          EXIT_CODE=$(aws ecs describe-tasks --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN" \
++            --query 'tasks[0].containers[0].exitCode' --output text)
++          if [ "$EXIT_CODE" != "0" ]; then
++            echo "ERROR: db-init task exited with code $EXIT_CODE."
++            echo "See CloudWatch log group /ecs/acquireiq-db-init for details."
++            exit 1
++          fi
++          echo "Database schema is up to date."
++
++      - name: Wait for backend service to be stable
++        run: |
++          aws ecs wait services-stable \
++            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
++            --services "${{ steps.tf.outputs.ecs_service }}"
++
++      - uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++
++      - name: Build frontend
++        working-directory: frontend
++        run: |
++          set -euo pipefail
++          npm install
++          npm run build
++          if [ ! -f "dist/index.html" ]; then
++            echo "ERROR: dist/index.html missing after build."
++            exit 1
++          fi
++
++      # Uploaded under acquireiq/ to match the Vite base path.
++      - name: Upload frontend and clear CloudFront cache
++        run: |
++          set -euo pipefail
++          aws s3 sync frontend/dist "s3://${{ steps.tf.outputs.frontend_bucket }}/acquireiq/" --delete
++          aws cloudfront create-invalidation \
++            --distribution-id "${{ steps.tf.outputs.cloudfront_distribution_id }}" \
++            --paths "/acquireiq/*"
++
++      - name: Verify health through CloudFront
++        run: |
++          set -euo pipefail
++          URL="${{ steps.tf.outputs.app_url }}"
++          HEALTH="${URL%/acquireiq/}/api/health"
++          for i in $(seq 1 20); do
++            if BODY=$(curl -sf "$HEALTH"); then
++              echo "Healthy: $BODY"
++              echo "App is live at $URL"
++              exit 0
++            fi
++            echo "Attempt $i/20: not healthy yet"
++            sleep 15
++          done
++          echo "ERROR: $HEALTH did not respond after deploy."
++          exit 1
+diff --git a/.gitignore b/.gitignore
+index d20d423..43fcf09 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -71,4 +71,9 @@ dev_reports/
+ *_BAK
+ 
+ dist-ssr/
+-*.local
+\ No newline at end of file
++*.local
++
++
++infra/**/.terraform/
++infra/**/*.tfstate*
++infra/**/*.tfvars
+diff --git a/README.md b/README.md
+index 783046f..c2b83ae 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # AcquireIQ
+ 
+-AI-assisted government IT acquisition pipeline tracker built for the iAdeptive Full-Stack Engineering Lead Challenge.
++AI-assisted government IT acquisition pipeline tracker.
+ 
+ ## Overview
+ 
+@@ -279,6 +279,7 @@ acquireiq/
+ +-- README.md
+ +-- REQUIREMENTS_TO_DESIGN_VERIFICATION.md
+ +-- REQUEST_STATUS_STATE_MACHINE.md
+++-- APPROVAL_STAGE_STATE_MACHINE.md
+ ```
+ 
+ ------------------------------------------------------------------------
+diff --git a/REQUIREMENTS_TO_DESIGN_VERIFICATION.md b/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
+index dd26f81..c7b39a8 100644
+--- a/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
++++ b/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
+@@ -51,7 +51,7 @@ The verification uses the following rules:
+ | **Hallucinated or out-of-schema fields must be caught rather than silently accepted.** | **Covered explicitly.** Section 10 identifies unknown/out-of-schema model output as invalid and keeps the LLM outside the application authority boundary. |
+ | **Visible fallback for low-confidence or malformed model output.** | **Covered.** Section 10 states that low-confidence or malformed AI behavior is surfaced visibly rather than presented as authoritative. |
+ | **LLM/API unavailable behavior.** | **Covered without inventing resilience requirements.** Section 10 states that if the provider is unavailable, AI-assisted search is treated as unavailable and the user receives a clear indication that the operation could not be completed. It deliberately does not claim retries, provider failover, or other mechanisms because those are not required by the challenge. |
+-| **Prompt(s) checked into the repository.** | **Covered.** The LLM prompt is defined directly in the TypeScript AI-provider implementation and is therefore checked into the repository with the application source rather than maintained as a separate prompt file. |
++| **Prompt(s) checked into the repository.** | **Covered.** The LLM prompt is defined in its own module, `backend/src/services/ai/prompt.ts`, separate from the AI-provider implementation, and is checked into the repository with the rest of the application source. |
+ | **README states LLM provider and exactly where reviewer substitutes API key.** | **Covered.** The README identifies OpenAI as the configured LLM provider and documents `OPENAI_API_KEY` in the backend `.env` configuration as the reviewer-supplied API key. |
+ | **LLM integration should be cleanly separated so providers could be swapped without rewriting the endpoint.** | **Covered.** Provider-specific LLM interaction is isolated behind the AI provider/service boundary, while the endpoint remains responsible for the application contract rather than provider-specific behavior. |
+ | **React frontend.** | **Covered by explicit implementation choice.** Section 1 states React. |
+diff --git a/changes.diff b/changes.diff
+new file mode 100644
+index 0000000..e17a421
+--- /dev/null
++++ b/changes.diff
+@@ -0,0 +1,536 @@
++diff --git a/.gitattributes b/.gitattributes
++new file mode 100644
++index 0000000..3fd9ec8
++--- /dev/null
+++++ b/.gitattributes
++@@ -0,0 +1,2 @@
+++*.bat text eol=crlf
+++*.sh text eol=lf
++\ No newline at end of file
++diff --git a/.github/workflows/code-checks.yml b/.github/workflows/code-checks.yml
++index 9bbe17a..c41d072 100644
++--- a/.github/workflows/code-checks.yml
+++++ b/.github/workflows/code-checks.yml
++@@ -1,15 +1,13 @@
++ name: Code Checks (type-check + boot test)
++ 
++ # ============================================================
++-# PURPOSE: Confirm the backend is sound. Does NOT touch the VPS
++-# and does NOT deploy anything. This is a pass/fail gate only.
+++# PURPOSE: Check the frontend build, backend types, and backend
+++# startup/database access. Does not deploy or contact the VPS.
++ #
++ # TRIGGERS: automatically, on every push to main AND every pull
++ # request targeting main; also runnable by hand from the GitHub
++-# Actions tab (workflow_dispatch), useful after clearing run
++-# history, since a workflow with no runs and no workflow_dispatch
++-# disappears from the Actions sidebar entirely. Runs on GitHub's
++-# disposable runner, never on your VPS.
+++# Actions tab (workflow_dispatch). Runs on GitHub's disposable
+++# runner, never on your VPS.
++ # ============================================================
++ #
++ # Three jobs. frontend-build is independent and listed first; the
++@@ -19,59 +17,37 @@ name: Code Checks (type-check + boot test)
++ #      build (npm run build), and confirms dist/index.html actually
++ #      got created. Independent of the other two jobs, runs in
++ #      parallel, not sequentially after them.
++-#   2. type-check — regenerates schemas.generated.ts (swagger-spec.ts
++-#      imports it, it doesn't exist in a fresh checkout otherwise),
+++#   2. type-check — regenerates schemas.generated.ts from the current
+++#      TypeScript contracts (swagger-spec.ts imports it),
++ #      then confirms the full backend type-checks cleanly under
++ #      strict: true (npx tsc --noEmit). Stronger than a plain-JS
++ #      syntax check: this catches real type errors, not just parse
++ #      errors. No secrets needed, always runs.
++-#   3. boot-test     — installs deps, confirms they actually
++-#      installed, regenerates schemas.generated.ts, compiles
++-#      (npm run build), boots the compiled server (dist/server.js,
++-#      the same artifact Docker/production actually runs), and
++-#      checks the actual response BODY of /api/health (not just an
++-#      HTTP 2xx), /api/docs, plus confirms /api/verify returns 400
++-#      on a request with no image. services/extraction.ts and
++-#      services/matching.ts are both implemented now, extraction
++-#      calls a real OpenAI vision model, so this job's own missing-
++-#      image check exercises real validation logic, not a stub. It
++-#      still does NOT exercise the real vision call end to end
++-#      (that needs an OPENAI_API_KEY secret here plus a real test
++-#      label image); add a real eval-harness job for that later,
++-#      same pattern as insight-engine-rag's eval-harness job checks
++-#      for OPENAI_API_KEY before running.
+++#   3. boot-test — initializes a disposable PostgreSQL database with
+++#      scripts/setup-database.sql, installs deps, regenerates schemas,
+++#      compiles (npm run build), and boots dist/server.js. Checks
+++#      /api/health's JSON body, /api/docs, and a database-backed
+++#      GET /requests. No seed data or OpenAI key is needed for these
+++#      checks. This is a startup/database smoke test, not the full
+++#      backend regression suite or a live AI integration test.
++ #
++ # Every multi-line `run:` block below uses `set -euo pipefail`, not
++ # just `set -e`: `-u` fails loudly on an unset variable instead of
++ # silently treating it as empty, and `-o pipefail` makes a failure
++ # anywhere in a piped command fail the whole step instead of only
++-# reflecting the exit code of the last command in the pipe. This is
++-# the same standard used in deploy-to-vps.yml.
++-#
++-# NOTE: There is still no eval harness job here. services/extraction.ts
++-# and services/matching.ts are now implemented (they no longer throw
++-# "not implemented"), so this is no longer blocked on the logic not
++-# existing, it's just not built yet. Add one the same way
++-# insight-engine-rag's ci.yml does: gate on an OPENAI_API_KEY secret,
++-# boot the server, run a fixed set of test labels through /api/verify,
++-# and assert on expected match/no-match results per field.
+++# reflecting the exit code of the last command in the pipe.
++ #
++ # RELATIONSHIP TO deploy-to-vps.yml: deploy-to-vps.yml's own
++-# verify-build job re-runs a similar (not identical) set of checks
++-# as a final gate immediately before touching the VPS. That overlap
++-# is deliberate, not a mistake, this file is the fast day-to-day
++-# check on every push/PR, deploy-to-vps.yml's copy is a last-line
++-# check right before production changes.
+++# verify-build job runs independently. A failure in this workflow
+++# does not block that separate deployment workflow. The deployment
+++# workflow still contains unadapted template configuration.
++ 
++ "on":
++   push:
++     branches: [main]
++   pull_request:
++     branches: [main]
++-  # Without this, the workflow only shows in the Actions sidebar
++-  # while at least one run exists. Clear the run history with no
++-  # workflow_dispatch defined and the workflow disappears entirely,
++-  # with no way to trigger it manually until the next real push.
+++  # Allow a manual check without requiring a new push.
++   workflow_dispatch: {}
++ 
++ jobs:
++@@ -119,17 +95,14 @@ jobs:
++ 
++       - name: Install dependencies
++         # Full install, not --omit=dev: typescript, @types/*, and the
++-        # OpenAPI schema generator (ts-json-schema-generator, ts-node)
+++        # OpenAPI schema generator (ts-json-schema-generator, tsx)
++         # are all devDependencies, needed here to type-check and to
++         # generate schemas.generated.ts.
++         run: npm install
++ 
++       - name: Generate OpenAPI schemas
++-        # swagger-spec.ts imports ./schemas.generated, which doesn't
++-        # exist in a fresh checkout, it's a build artifact (see
++-        # scripts/generate-openapi-schemas.ts). Without this step,
++-        # the next step fails on a missing module, not a real type
++-        # error.
+++        # Regenerate the checked-in schema module from current TypeScript
+++        # contracts before checking swagger-spec.ts and its imports.
++         run: npm run generate:schemas
++ 
++       - name: Type-check entire backend (no output emitted)
++@@ -138,6 +111,23 @@ jobs:
++   boot-test:
++     name: Boot test (live server, compiled output)
++     runs-on: ubuntu-latest
+++    # These credentials are fixtures for this disposable CI database only.
+++    services:
+++      postgres:
+++        image: postgres:17
+++        env:
+++          POSTGRES_PASSWORD: acquireiq_ci_admin
+++          POSTGRES_DB: postgres
+++        ports:
+++          - 5432:5432
+++        options: >-
+++          --health-cmd "pg_isready -U postgres -d postgres"
+++          --health-interval 5s
+++          --health-timeout 5s
+++          --health-retries 12
+++    env:
+++      PORT: 3002
+++      DATABASE_URL: postgresql://acquireiq_app:acquireiq_ci_app@127.0.0.1:5432/acquireiq
++     defaults:
++       run:
++         working-directory: backend
++@@ -149,6 +139,21 @@ jobs:
++         with:
++           node-version: '20'
++ 
+++      - name: Initialize disposable AcquireIQ database
+++        env:
+++          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+++        run: |
+++          set -euo pipefail
+++          docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d postgres
+++          # Precreate the application role with CI-only credentials. The
+++          # unchanged bootstrap skips role creation when the role exists.
+++          docker exec "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
+++            -c "CREATE ROLE acquireiq_app LOGIN PASSWORD 'acquireiq_ci_app';"
+++          # psql is required: the bootstrap creates the database, uses
+++          # backslash commands, reconnects, and changes the active role.
+++          docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
+++            < scripts/setup-database.sql
+++
++       - name: Install dependencies
++         run: npm install
++ 
++@@ -170,8 +175,6 @@ jobs:
++           echo "Dependencies confirmed installed."
++ 
++       - name: Start server in background
++-        env:
++-          PORT: 3002
++         run: |
++           set -euo pipefail
++           npm run generate:schemas
++@@ -183,10 +186,16 @@ jobs:
++         run: |
++           set -euo pipefail
++           for i in $(seq 1 20); do
++-            if curl -sf http://127.0.0.1:3002/api/health > /dev/null; then
+++            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+++              echo "ERROR: Backend process exited before becoming healthy."
+++              cat server.log
+++              exit 1
+++            fi
+++            if curl --connect-timeout 2 --max-time 5 -sf http://127.0.0.1:3002/api/health > /dev/null; then
++               echo "Server is up"
++               exit 0
++             fi
+++            echo "Waiting for backend health ($i/20)..."
++             sleep 1
++           done
++           echo "Server did not become healthy in time"
++@@ -200,11 +209,11 @@ jobs:
++         # Check the actual body, not just the status code.
++         run: |
++           set -euo pipefail
++-          BODY=$(curl -sf http://127.0.0.1:3002/api/health)
+++          BODY=$(curl --connect-timeout 2 --max-time 5 -sf http://127.0.0.1:3002/api/health)
++           echo "Response body: $BODY"
++-          OK=$(echo "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok===true)}catch(e){console.log('false')}})")
+++          OK=$(echo "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const body=JSON.parse(d);console.log(body.ok===true && body.service==='acquireiq-backend')}catch(e){console.log('false')}})")
++           if [ "$OK" != "true" ]; then
++-            echo "ERROR: /api/health responded but body did not report ok:true."
+++            echo "ERROR: /api/health did not report ok:true for acquireiq-backend."
++             exit 1
++           fi
++           echo "/api/health body confirmed ok:true."
++@@ -212,45 +221,40 @@ jobs:
++       - name: Confirm Swagger docs respond
++         run: |
++           set -euo pipefail
++-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:3002/api/docs)
+++          STATUS=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:3002/api/docs)
++           if [ "$STATUS" != "200" ]; then
++             echo "Expected 200 from /api/docs, got $STATUS"
++             exit 1
++           fi
++           echo "/api/docs confirmed 200."
++ 
++-      - name: Confirm /api/verify rejects a request with no image
++-        # /api/verify is now implemented (services/extraction.ts and
++-        # services/matching.ts no longer throw "not implemented").
++-        # This step used to just check for "any non-200" as a stub
++-        # sanity check; now that there's real validation, assert the
++-        # specific expected code: 400, from server.ts's own check for
++-        # a missing labelImage. This still catches the same class of
++-        # regression the old check did (a silent, accidental 200 with
++-        # no real data), just with a tighter, now-meaningful assertion
++-        # instead of a placeholder one.
++-        #
++-        # This deliberately does NOT exercise the real vision call
++-        # (that would need OPENAI_API_KEY as a secret here, and a real
++-        # test label image checked into the repo or fetched at
++-        # runtime). Only the pre-extraction validation path is
++-        # covered. Add a real eval harness job (boot server, POST an
++-        # actual label through /api/verify, assert on expected
++-        # match/no-match per field) once you're ready to wire up that
++-        # secret, same pattern as insight-engine-rag's eval-harness job.
+++      - name: Confirm acquisition requests can be read from PostgreSQL
+++        # /api/health is a liveness check and does not query the database.
+++        # GET /requests exercises the application's database connection,
+++        # role permissions, and initialized schema without needing seed data.
++         run: |
++           set -euo pipefail
++-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3002/api/verify)
++-          if [ "$STATUS" != "400" ]; then
++-            echo "Expected 400 (missing labelImage) from /api/verify with no body, got $STATUS"
++-            exit 1
++-          fi
++-          echo "/api/verify confirmed 400 on missing labelImage."
+++          curl --connect-timeout 2 --max-time 10 -sf http://127.0.0.1:3002/requests \
+++            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{if(!Array.isArray(JSON.parse(d)))throw new Error('Expected a requests array');console.log('/requests confirmed a database-backed JSON array.')}catch(e){console.error(e);process.exitCode=1}})"
+++          kill -0 "$(cat server.pid)"
++ 
++       - name: Show server log on failure
++         if: failure()
++-        run: cat server.log
+++        run: |
+++          set -euo pipefail
+++          if [ -f server.log ]; then
+++            cat server.log
+++          else
+++            echo "Backend log is unavailable; failure occurred before server startup."
+++          fi
++ 
++       - name: Stop server
++         if: always()
++-        run: kill "$(cat server.pid)" 2>/dev/null || true
+++        run: |
+++          set -euo pipefail
+++          if [ -f server.pid ]; then
+++            PID=$(cat server.pid)
+++            if kill -0 "$PID" 2>/dev/null; then
+++              kill "$PID"
+++            fi
+++          fi
++diff --git a/.github/workflows/deploy-to-aws.yml b/.github/workflows/deploy-to-aws.yml
++new file mode 100644
++index 0000000..ce49b9a
++--- /dev/null
+++++ b/.github/workflows/deploy-to-aws.yml
++@@ -0,0 +1,198 @@
+++name: Deploy to AWS
+++
+++# ============================================================
+++# PURPOSE: Deploy AcquireIQ to AWS with Terraform. Separate from
+++# deploy-to-vps.yml, which deploys to the Linode VPS.
+++#
+++# TRIGGER: manual only (Actions tab -> Deploy to AWS -> Run
+++# workflow), so it never runs alongside deploy-to-vps.yml on a
+++# push. To deploy on every push to main instead, add:
+++#   push:
+++#     branches: [main]
+++#
+++# ONE-TIME SETUP before the first run:
+++#   1. From your PC, with AWS admin credentials:
+++#        cd infra/bootstrap
+++#        terraform init
+++#        terraform apply
+++#   2. Add repository secrets (Settings -> Secrets and variables
+++#      -> Actions):
+++#        AWS_ROLE_ARN        bootstrap output github_deploy_role_arn
+++#        TF_STATE_BUCKET     bootstrap output tf_state_bucket
+++#        DB_MASTER_PASSWORD  any strong password, letters and digits
+++#        DB_APP_PASSWORD     any strong password, letters and digits
+++#        OPENAI_API_KEY      your OpenAI key
+++#      Passwords should be letters and digits only, because the
+++#      app password goes inside the DATABASE_URL connection string.
+++#
+++# WHAT EACH RUN DOES:
+++#   1. Logs in to AWS with GitHub OIDC (no stored AWS keys)
+++#   2. Builds and pushes the backend and db-init images
+++#   3. terraform apply (creates or updates all infrastructure)
+++#   4. Runs the db-init task to create or update the schema
+++#   5. Waits for the backend service to be healthy
+++#   6. Builds the frontend, uploads it to S3, clears the cache
+++#   7. Checks /api/health through CloudFront
+++# ============================================================
+++
+++"on":
+++  workflow_dispatch: {}
+++
+++# id-token: write lets the job request the OIDC token AWS trusts.
+++permissions:
+++  id-token: write
+++  contents: read
+++
+++# Never run two deploys at once against the same state.
+++concurrency:
+++  group: deploy-to-aws
+++  cancel-in-progress: false
+++
+++env:
+++  AWS_REGION: us-east-1
+++  IMAGE_TAG: ${{ github.sha }}
+++
+++jobs:
+++  deploy:
+++    name: Terraform apply and deploy
+++    runs-on: ubuntu-latest
+++    steps:
+++      - uses: actions/checkout@v4
+++
+++      - name: Confirm required secrets are set
+++        run: |
+++          set -euo pipefail
+++          missing=""
+++          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing="$missing AWS_ROLE_ARN"
+++          [ -z "${{ secrets.TF_STATE_BUCKET }}" ] && missing="$missing TF_STATE_BUCKET"
+++          [ -z "${{ secrets.DB_MASTER_PASSWORD }}" ] && missing="$missing DB_MASTER_PASSWORD"
+++          [ -z "${{ secrets.DB_APP_PASSWORD }}" ] && missing="$missing DB_APP_PASSWORD"
+++          [ -z "${{ secrets.OPENAI_API_KEY }}" ] && missing="$missing OPENAI_API_KEY"
+++          if [ -n "$missing" ]; then
+++            echo "Missing required repository secrets:$missing"
+++            exit 1
+++          fi
+++          echo "All required secrets are present."
+++
+++      - name: Log in to AWS
+++        uses: aws-actions/configure-aws-credentials@v4
+++        with:
+++          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+++          aws-region: ${{ env.AWS_REGION }}
+++
+++      - name: Log in to ECR
+++        id: ecr
+++        uses: aws-actions/amazon-ecr-login@v2
+++
+++      # Images are tagged with the commit SHA, so every deploy is
+++      # traceable and Terraform sees a change to roll out.
+++      - name: Build and push backend image
+++        run: |
+++          set -euo pipefail
+++          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-backend:$IMAGE_TAG"
+++          docker build -t "$IMAGE" backend
+++          docker push "$IMAGE"
+++
+++      - name: Build and push db-init image
+++        run: |
+++          set -euo pipefail
+++          IMAGE="${{ steps.ecr.outputs.registry }}/acquireiq-db-init:$IMAGE_TAG"
+++          docker build -t "$IMAGE" -f infra/db-init/Dockerfile .
+++          docker push "$IMAGE"
+++
+++      # terraform_wrapper: false so "terraform output -raw" returns
+++      # plain values that later steps can use.
+++      - uses: hashicorp/setup-terraform@v3
+++        with:
+++          terraform_wrapper: false
+++
+++      - name: Terraform init
+++        working-directory: infra
+++        run: terraform init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+++
+++      - name: Terraform apply
+++        working-directory: infra
+++        env:
+++          TF_VAR_image_tag: ${{ env.IMAGE_TAG }}
+++          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
+++          TF_VAR_db_app_password: ${{ secrets.DB_APP_PASSWORD }}
+++          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+++        run: terraform apply -input=false -auto-approve
+++
+++      - name: Read Terraform outputs
+++        id: tf
+++        working-directory: infra
+++        run: |
+++          set -euo pipefail
+++          for name in app_url frontend_bucket cloudfront_distribution_id ecs_cluster ecs_service db_init_task_definition ecs_subnets ecs_security_group ecs_assign_public_ip; do
+++            echo "$name=$(terraform output -raw $name)" >> "$GITHUB_OUTPUT"
+++          done
+++
+++      # RDS is private, so the schema is created from a task inside
+++      # the VPC. Fails the deploy if the task exits non-zero.
+++      - name: Create or update database schema
+++        run: |
+++          set -euo pipefail
+++          TASK_ARN=$(aws ecs run-task \
+++            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
+++            --task-definition "${{ steps.tf.outputs.db_init_task_definition }}" \
+++            --launch-type FARGATE \
+++            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf.outputs.ecs_subnets }}],securityGroups=[${{ steps.tf.outputs.ecs_security_group }}],assignPublicIp=${{ steps.tf.outputs.ecs_assign_public_ip }}}" \
+++            --query 'tasks[0].taskArn' --output text)
+++          echo "Started db-init task $TASK_ARN"
+++          aws ecs wait tasks-stopped --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN"
+++          EXIT_CODE=$(aws ecs describe-tasks --cluster "${{ steps.tf.outputs.ecs_cluster }}" --tasks "$TASK_ARN" \
+++            --query 'tasks[0].containers[0].exitCode' --output text)
+++          if [ "$EXIT_CODE" != "0" ]; then
+++            echo "ERROR: db-init task exited with code $EXIT_CODE."
+++            echo "See CloudWatch log group /ecs/acquireiq-db-init for details."
+++            exit 1
+++          fi
+++          echo "Database schema is up to date."
+++
+++      - name: Wait for backend service to be stable
+++        run: |
+++          aws ecs wait services-stable \
+++            --cluster "${{ steps.tf.outputs.ecs_cluster }}" \
+++            --services "${{ steps.tf.outputs.ecs_service }}"
+++
+++      - uses: actions/setup-node@v4
+++        with:
+++          node-version: '20'
+++
+++      - name: Build frontend
+++        working-directory: frontend
+++        run: |
+++          set -euo pipefail
+++          npm install
+++          npm run build
+++          if [ ! -f "dist/index.html" ]; then
+++            echo "ERROR: dist/index.html missing after build."
+++            exit 1
+++          fi
+++
+++      # Uploaded under acquireiq/ to match the Vite base path.
+++      - name: Upload frontend and clear CloudFront cache
+++        run: |
+++          set -euo pipefail
+++          aws s3 sync frontend/dist "s3://${{ steps.tf.outputs.frontend_bucket }}/acquireiq/" --delete
+++          aws cloudfront create-invalidation \
+++            --distribution-id "${{ steps.tf.outputs.cloudfront_distribution_id }}" \
+++            --paths "/acquireiq/*"
+++
+++      - name: Verify health through CloudFront
+++        run: |
+++          set -euo pipefail
+++          URL="${{ steps.tf.outputs.app_url }}"
+++          HEALTH="${URL%/acquireiq/}/api/health"
+++          for i in $(seq 1 20); do
+++            if BODY=$(curl -sf "$HEALTH"); then
+++              echo "Healthy: $BODY"
+++              echo "App is live at $URL"
+++              exit 0
+++            fi
+++            echo "Attempt $i/20: not healthy yet"
+++            sleep 15
+++          done
+++          echo "ERROR: $HEALTH did not respond after deploy."
+++          exit 1
++diff --git a/.gitignore b/.gitignore
++index d20d423..43fcf09 100644
++--- a/.gitignore
+++++ b/.gitignore
++@@ -71,4 +71,9 @@ dev_reports/
++ *_BAK
++ 
++ dist-ssr/
++-*.local
++\ No newline at end of file
+++*.local
+++
+++
+++infra/**/.terraform/
+++infra/**/*.tfstate*
+++infra/**/*.tfvars
++diff --git a/README.md b/README.md
++index 783046f..c2b83ae 100644
++--- a/README.md
+++++ b/README.md
++@@ -1,6 +1,6 @@
++ # AcquireIQ
++ 
++-AI-assisted government IT acquisition pipeline tracker built for the iAdeptive Full-Stack Engineering Lead Challenge.
+++AI-assisted government IT acquisition pipeline tracker.
++ 
++ ## Overview
++ 
++@@ -279,6 +279,7 @@ acquireiq/
++ +-- README.md
++ +-- REQUIREMENTS_TO_DESIGN_VERIFICATION.md
++ +-- REQUEST_STATUS_STATE_MACHINE.md
++++-- APPROVAL_STAGE_STATE_MACHINE.md
++ ```
++ 
++ ------------------------------------------------------------------------
++diff --git a/REQUIREMENTS_TO_DESIGN_VERIFICATION.md b/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
++index dd26f81..c7b39a8 100644
++--- a/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
+++++ b/REQUIREMENTS_TO_DESIGN_VERIFICATION.md
++@@ -51,7 +51,7 @@ The verification uses the following rules:
++ | **Hallucinated or out-of-schema fields must be caught rather than silently accepted.** | **Covered explicitly.** Section 10 identifies unknown/out-of-schema model output as invalid and keeps the LLM outside the application authority boundary. |
++ | **Visible fallback for low-confidence or malformed model output.** | **Covered.** Section 10 states that low-confidence or malformed AI behavior is surfaced visibly rather than presented as authoritative. |
++ | **LLM/API unavailable behavior.** | **Covered without inventing resilience requirements.** Section 10 states that if the provider is unavailable, AI-assisted search is treated as unavailable and the user receives a clear indication that the operation could not be completed. It deliberately does not claim retries, provider failover, or other mechanisms because those are not required by the challenge. |
++-| **Prompt(s) checked into the repository.** | **Covered.** The LLM prompt is defined directly in the TypeScript AI-provider implementation and is therefore checked into the repository with the application source rather than maintained as a separate prompt file. |
+++| **Prompt(s) checked into the repository.** | **Covered.** The LLM prompt is defined in its own module, `backend/src/services/ai/prompt.ts`, separate from the AI-provider implementation, and is checked into the repository with the rest of the application source. |
++ | **README states LLM provider and exactly where reviewer substitutes API key.** | **
+\ No newline at end of file
+diff --git a/dev_scripts/start_docker.bat b/dev_scripts/start_docker.bat
+index c31412a..badaa6d 100644
+--- a/dev_scripts/start_docker.bat
++++ b/dev_scripts/start_docker.bat
+@@ -1,14 +1,22 @@
+ @echo off
++setlocal EnableExtensions
+ REM ============================================================
+ REM  start_docker.bat
+ REM  Checks if the Docker engine is actually responding. If not,
+-REM  launches Docker Desktop and waits (up to 2 minutes) for it
+-REM  to finish starting before returning control.
++REM  launches Docker Desktop and checks readiness up to 24 times,
++REM  waiting 5 seconds between unsuccessful checks.
++REM  Returns a nonzero exit code on failure without prompting.
+ REM
+ REM  Call this at the top of any script that needs docker build/run,
+-REM  e.g. from build_back_docker.bat: call start_docker.bat
++REM  e.g. from act.bat
+ REM ============================================================
+ 
++where docker >nul 2>&1
++if errorlevel 1 (
++    echo ERROR: docker not found on PATH. Is Docker Desktop installed?
++    exit /b 1
++)
++
+ echo Checking if Docker is running...
+ docker info >nul 2>&1
+ if not errorlevel 1 (
+@@ -32,13 +40,24 @@ if not exist "%DOCKER_DESKTOP_EXE%" (
+     echo  update the DOCKER_DESKTOP_EXE path near the top.
+     echo ============================================================
+     echo.
+-    pause
++    exit /b 1
++)
++
++REM PowerShell supplies a delay that also works with redirected input.
++where powershell.exe >nul 2>&1
++if errorlevel 1 (
++    echo ERROR: powershell.exe not found on PATH; cannot wait for Docker readiness.
+     exit /b 1
+ )
+ 
+ start "" "%DOCKER_DESKTOP_EXE%"
++set "START_RESULT=%ERRORLEVEL%"
++if not "%START_RESULT%"=="0" (
++    echo ERROR: Failed to launch Docker Desktop.
++    exit /b %START_RESULT%
++)
+ 
+-echo Waiting for Docker engine to become ready, this can take a minute or two...
++echo Waiting for Docker engine to become ready...
+ 
+ set /a attempts=0
+ 
+@@ -54,16 +73,20 @@ if not errorlevel 1 (
+ if %attempts% GEQ 24 (
+     echo.
+     echo ============================================================
+-    echo  ERROR: Docker did not become ready after 2 minutes.
++    echo  ERROR: Docker did not become ready after 24 readiness checks.
+     echo  Check the whale icon in your system tray, it should be
+     echo  steady, not animating, once fully started.
+     echo  Once it looks ready, just re-run your original command.
+     echo ============================================================
+     echo.
+-    pause
+     exit /b 1
+ )
+ 
+ echo   still waiting, attempt %attempts% of 24
+-timeout /t 5 /nobreak >nul
+-goto waitloop
++powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"
++set "WAIT_RESULT=%ERRORLEVEL%"
++if not "%WAIT_RESULT%"=="0" (
++    echo ERROR: Failed while waiting for Docker readiness.
++    exit /b %WAIT_RESULT%
++)
++goto waitloop
+\ No newline at end of file
+diff --git a/docs/AWS Terraform Setup.docx b/docs/AWS Terraform Setup.docx
+new file mode 100644
+index 0000000..60deaf7
+--- /dev/null
++++ b/docs/AWS Terraform Setup.docx	
+@@ -0,0 +1,9 @@
++AcquireIQ--------------------------------------------------------------------------------
++AWS Deployment with TerraformSetup guide covering the AWS services used, how they connect, the one-time setup, and the automated GitHub Actions deployment.Status Draft. The Terraform files and the deploy-to-aws.yml workflow have not yet been run through terraform plan or against a real AWS account. Treat every step as untested until it has been run.1. OverviewAcquireIQ has three parts. A React frontend built with Vite, a Node.js and Express backend packaged as a Docker image listening on port 3002, and a PostgreSQL database. The backend also calls OpenAI for natural-language search.Terraform creates the AWS infrastructure. The GitHub Actions workflow deploy-to-aws.yml runs Terraform and then ships the app, so after a one-time setup every deployment is a single click with no manual steps. It is separate from deploy-to-vps.yml, which deploys to the Linode VPS.--------------------------------------------------------------------------------
++ Design goal  One public HTTPS address. The browser loads the frontend and calls the API on the same domain, so there are no mixed-content or CORS problems and the backend is never exposed directly to the internet.2. Architecture2.1 Architecture diagramSolid lines numbered 1 to 6 are a visitor's request. Dashed lines lettered A to E are a deployment. Colours follow a colour-blind-safe palette, one per service category, with a legend on the right. The API and database each run in one Availability Zone that AWS chooses; the diagram shows one possible placement.2.2 Request flow Browser    |  HTTPS    v CloudFront  (https://<id>.cloudfront.net)    |-- /acquireiq/*             --> S3 bucket (React build, private)    |-- /api/*  /requests*       --> Application Load Balancer (HTTP :80)    |-- /dashboard*  /assist/*         |                                       v                               ECS Fargate task (API :3002)                                       |                                       v                               RDS PostgreSQL 17 (:5432, private)2.3 Network layoutThe app gets its own VPC across two Availability Zones (AZs), each zone being a separate AWS data center in us-east-1.PartAddress rangeWhat is in itAcquireIQ VPC10.20.0.0/16Everything that needs its own network address.Public subnets (one per zone)10.20.0.0/24, 10.20.1.0/24Routed to the internet gateway. Hold the load balancer and, by default, the API and db-init tasks with public IPs. The tasks are still only reachable from the load balancer.Private subnets (one per zone)10.20.10.0/24, 10.20.11.0/24No route from the internet. Hold the database. The second private subnet is required by RDS and is spare unless Multi-AZ is turned on or AWS moves the database there.Internet gatewayn/aThe VPC's door to the internet, used by the public subnets.NAT gateway (optional)n/aOff by default. Set use_nat_gateway = true to move the API and db-init tasks into the private subnets with no public IP. Adds an hourly charge.S3, ECR, Secrets Manager, CloudWatch Logs and IAM sit outside the VPC because they are shared regional services run by AWS. The tasks call them over HTTPS, and IAM permissions, not network rules, decide what they may do. CloudFront runs at AWS edge locations worldwide.2.4 Network securityEach layer accepts traffic only from the layer directly in front of it.Security groupAllows inFromacquireiq-albTCP 80CloudFront origin-facing IP ranges only (AWS managed prefix list)acquireiq-ecsTCP 3002The load balancer security groupacquireiq-dbTCP 5432The ECS security group (API and db-init tasks)2.5 Health checks and recovery   1. The load balancer calls /api/health on the API task every 30 seconds.   2. Two failures in a row mark the task unhealthy, and ECS stops it and starts a replacement.   3. With one task there is a gap of a minute or two. API calls fail with HTTP 503, the React app retries each call twice, then shows Backend unavailable. The page itself still loads from S3.   4. Five passing checks in a row mark the new task healthy, and traffic resumes.All of this is automatic. Running two tasks (desired_count = 2) would remove the gap at roughly double the Fargate cost.3. AWS Services UsedServiceTerraform resourcesPurposeAmazon VPCVPC, 2 public and 2 private subnets, internet gateway, route tables, optional NAT gatewayThe app's own network. Public subnets for the load balancer and API, private subnets for the database. See section 2.3.Amazon S3frontend bucket (main), state bucket (bootstrap)Frontend bucket stores the React build, readable only by CloudFront. State bucket stores Terraform state, versioned and encrypted.Amazon CloudFrontaws_cloudfront_distribution, origin access controlHTTPS entry point. Serves static files from S3 and forwards API paths to the load balancer with caching off.Elastic Load Balancingaws_lb, target group, listenerApplication Load Balancer that routes requests to the backend and health-checks /api/health.Amazon ECRtwo repositories (bootstrap)Private registries for the backend image and the db-init image.Amazon ECS on Fargatecluster, service, two task definitionsRuns the backend container (0.25 vCPU, 512 MB) and the one-off db-init task, with no EC2 instances to manage.Amazon RDS for PostgreSQLaws_db_instance, subnet groupPostgreSQL 17 on db.t4g.micro, 20 GB, not publicly accessible.AWS Secrets Managerfour secretsDATABASE_URL, OPENAI_API_KEY, DB_MASTER_PASSWORD, DB_APP_PASSWORD. ECS injects them into containers at start.AWS IAMtask execution role, GitHub OIDC provider and deploy role (bootstrap)ECS role pulls images, writes logs and reads secrets. Deploy role lets GitHub Actions log in to AWS without stored keys.Amazon CloudWatch Logstwo log groupsBackend and db-init container output, kept for 14 days.4. Files in the RepositoryFilePurposeinfra/bootstrap/main.tfRun once from your PC. Creates the Terraform state bucket, the two ECR repositories, and the GitHub OIDC login role.infra/main.tfAll app infrastructure. Applied by the workflow on every deploy. State is stored in the bootstrap bucket.infra/db-init/DockerfileSmall PostgreSQL client image containing setup-database.sql.infra/db-init/init.shCreates the app role with the real password, then runs setup-database.sql. Must keep LF line endings..github/workflows/deploy-to-aws.ymlThe automated deployment.5. How a Deployment WorksEach run of deploy-to-aws.yml does the following with no manual steps.   5. Logs in to AWS through GitHub OIDC. No AWS keys are stored in GitHub.   6. Builds the backend and db-init Docker images and pushes them to ECR, tagged with the git commit SHA.   7. Runs terraform apply, creating or updating all infrastructure and pointing ECS at the new images.   8. Runs the db-init task inside the VPC to create or update the database schema. The deploy fails if it fails.   9. Waits for the backend service to become stable.   10. Builds the frontend, uploads it to S3 under acquireiq/, and clears the CloudFront cache.   11. Checks /api/health through CloudFront and prints the app address.--------------------------------------------------------------------------------
++ Trigger  The workflow runs only when started by hand from the Actions tab, so it never runs alongside deploy-to-vps.yml on a push. To deploy on every push to main, add a push trigger as described in the workflow's header comment.6. PrerequisitesNeeded only on your PC for the one-time bootstrap. Regular deployments run entirely in GitHub.   oo An AWS account and an IAM user or SSO role with administrator rights.   oo Terraform 1.10 or later. The configuration pins the AWS provider to version ~> 6.0.   oo AWS CLI v2, configured with aws configure or aws configure sso.7. One-Time Setup7.1 Keep Terraform files out of GitAdd these lines to the repository's .gitignore before running Terraform..gitignore infra/**/.terraform/ infra/**/*.tfstate* infra/**/*.tfvars7.2 Run the bootstrapWindows PowerShell, from the repository root cd infra\bootstrap terraform init terraform applyKeep the local terraform.tfstate this creates in infra\bootstrap. It holds no secrets but is needed to change or remove the bootstrap resources later.--------------------------------------------------------------------------------
++ If apply fails on the OIDC provider  An AWS account can have only one GitHub OIDC provider. If one already exists, import it with terraform import aws_iam_openid_connect_provider.github <its ARN> and apply again.7.3 Add GitHub secretsIn GitHub, open Settings, then Secrets and variables, then Actions, and add these repository secrets.SecretValueAWS_ROLE_ARNBootstrap output github_deploy_role_arnTF_STATE_BUCKETBootstrap output tf_state_bucketDB_MASTER_PASSWORDA strong password, letters and digits onlyDB_APP_PASSWORDA strong password, letters and digits only. It is placed inside the DATABASE_URL connection string, so symbols could break it.OPENAI_API_KEYYour OpenAI API key7.4 Run the first deploymentIn GitHub, open the Actions tab, choose Deploy to AWS, then Run workflow. The first run takes longer because RDS and CloudFront each take several minutes to create. The last step prints the app address.8. Database SetupRDS is private, so GitHub's runners cannot reach it. Instead the workflow starts the db-init image as a one-off ECS task inside the VPC. Each run it does three things.   12. Creates the acquireiq_app role if missing and sets its password to DB_APP_PASSWORD. Because the role already exists, setup-database.sql skips its hardcoded local password.   13. Grants the RDS postgres admin the right to act as acquireiq_app. RDS's admin is not a full superuser, and PostgreSQL 16 and later require this for CREATE DATABASE ... OWNER and SET ROLE.   14. Runs setup-database.sql, which only creates objects that are missing, so it is safe on every deploy.Demo seed data is not loaded automatically. Output from each run is in the /ecs/acquireiq-db-init CloudWatch log group.--------------------------------------------------------------------------------
++ Untested  This sequence mirrors what code-checks.yml does against a disposable PostgreSQL container, but it has not yet been run against RDS.9. Running Terraform by HandOptional. Useful for terraform plan before a deploy or for troubleshooting. Terraform prompts for the three secret variables, or reads them from TF_VAR_* environment variables.Windows PowerShell, from the repository root cd infra $bucket = terraform -chdir=bootstrap output -raw tf_state_bucket terraform init -backend-config="bucket=$bucket" terraform plan10. Known Gaps Before Production--------------------------------------------------------------------------------
++ Two major deficiencies, accepted for this demo  No API authentication: anyone with the URL can read, create and change acquisition requests and record approvals. No rate limiting: anyone can flood the API, including the search endpoint that calls OpenAI. Set a monthly spending limit on the OpenAI key. Both must be added before the app holds real data.AreaCurrent stateRecommended changeAPI authenticationNone. No login, session, token or API key checkAdd authentication before any real dataRate limitingNone, in code or in AWSAdd rate limiting in the API or AWS WAF on CloudFront; set an OpenAI spending limit nowDeploy roleAdministratorAccessLimit to the services main.tf actually managesDomainDefault *.cloudfront.net addressCustom domain, see section 13DatabaseSingle AZ, skip_final_snapshot = trueMulti-AZ, deletion protection, final snapshot, backupsDatabase TLSEncrypted, certificate not verified (sslmode=no-verify)Verify against the AWS RDS CA bundleAPI networkingTasks in public subnets with public IPs (default)Set use_nat_gateway = true, or add VPC endpoints, to move them into private subnetsApprovalWorkflow applies without reviewRun terraform plan on pull requests and require approval before apply11. CostThe always-on charges are the Application Load Balancer, the Fargate task, and the RDS instance. A rough estimate is $40 to $60 per month in us-east-1 at idle. This figure is unverified. Confirm it with the AWS Pricing Calculator before relying on it.12. Tear DownThe workflow never deletes anything. To remove the app infrastructure, run terraform destroy by hand as in section 9. Terraform asks for the three secret variables, and any values work for a destroy. This permanently deletes the database and its data with no final snapshot.The bootstrap resources stay in place. The state bucket has prevent_destroy set, so removing it also requires deleting that line from infra/bootstrap/main.tf first.13. Using Your Own DomainAfter the first deploy, the app is reachable at https://<id>.cloudfront.net/acquireiq/, where <id> is a random name AWS assigns. That address is for testing only. Visitors should use a leelinkoff.com address instead.--------------------------------------------------------------------------------
++ Key constraint  DNS maps a hostname to a server. It cannot map a path. A request to leelinkoff.com/mvps/acquireiq always reaches whatever server leelinkoff.com points to, which is currently the Linode running Apache (unverified, confirm before relying on it). So the URL choice decides where the traffic enters.13.1 OptionsOptionWhat visitors typeHow it worksTrade-offs1. Linode forwards to AWSleelinkoff.com/mvps/acquireiqApache on Linode proxies the path to the CloudFront address.Every request passes through Linode, then AWS. If Linode is down, the app is down. Needs frontend and Terraform path changes.2. Subdomain on AWSacquireiq.leelinkoff.comA GoDaddy CNAME points the subdomain straight at CloudFront.Recommended for AWS. Linode is not involved and app code is unchanged. Not a /mvps/ path.3. Host on Linode, no AWSleelinkoff.com/mvps/acquireiqdeploy-to-vps.yml deploys the container and frontend to Linode, like the RAG app.No AWS cost. Needs PostgreSQL on Linode and the workflow fixes still pending.13.2 Option 2 setup: acquireiq.leelinkoff.com   15. Request an ACM certificate for acquireiq.leelinkoff.com in us-east-1. CloudFront only accepts certificates from that region. Choose DNS validation.   16. Add the validation CNAME record that ACM shows to the leelinkoff.com DNS zone at GoDaddy, then wait for the certificate status to show Issued.   17. Add the domain and certificate to the CloudFront distribution in infra/main.tf, replacing the existing viewer_certificate block, then run the deploy workflow.infra/main.tf, inside aws_cloudfront_distribution aliases = ["acquireiq.leelinkoff.com"]   viewer_certificate {   acm_certificate_arn      = "<certificate ARN from step 1>"   ssl_support_method       = "sni-only"   minimum_protocol_version = "TLSv1.2_2021" }   18. At GoDaddy, add a CNAME record with host acquireiq pointing to the CloudFront domain (the <id>.cloudfront.net part of app_url).   19. Open https://acquireiq.leelinkoff.com/acquireiq/ and confirm the app loads with a valid certificate.13.3 Remove the /acquireiq/ suffixWith a dedicated subdomain, the app can live at the root so visitors type only acquireiq.leelinkoff.com.WhereChangefrontend/vite.config.jsChange base: '/acquireiq/' to base: '/'.infra/main.tfAdd default_root_object = "index.html" to aws_cloudfront_distribution, and change the app_url output to end in /.deploy-to-aws.ymlUpload to the bucket root (s3://.../ instead of s3://.../acquireiq/), invalidate /*, and adjust the health check URL.13.4 Redirect the raw CloudFront addressThe <id>.cloudfront.net address keeps working after the custom domain is added. A CloudFront Function attached to the default cache behavior as a viewer-request function sends anyone using it to the real domain.CloudFront Function (JavaScript) function handler(event) {   var host = event.request.headers.host.value;   if (host !== 'acquireiq.leelinkoff.com') {     return {       statusCode: 301,       statusDescription: 'Moved Permanently',       headers: { location: { value: 'https://acquireiq.leelinkoff.com' + event.request.uri } }     };   }   return event.request; }Attach it to the default behavior only. Redirecting the API behaviors would break POST and PATCH requests.13.5 Option 1 notes: leelinkoff.com/mvps/acquireiq through LinodeIf the exact /mvps/acquireiq path is required while still running on AWS, all of these change together.   oo frontend/vite.config.js base becomes /mvps/acquireiq/, and the frontend is built with VITE_API_BASE=/mvps/acquireiq so API calls stay under the proxied path.   oo The S3 upload prefix and the CloudFront path patterns change to match the new paths.   oo Apache on Linode gets a ProxyPass for /mvps/acquireiq/ to the CloudFront address, with ProxyPreserveHost Off so CloudFront receives its own hostname.   oo Optionally, Header unset lines in Apache remove the Via, X-Cache and Server headers that reveal CloudFront and S3.--------------------------------------------------------------------------------
++ Recommendation  If the exact leelinkoff.com/mvps/acquireiq URL matters most, Option 3 delivers it with the least moving parts. If AWS is the goal, use Option 2 with sections 13.3 and 13.4.
+\ No newline at end of file
+diff --git a/docs/AcquireIQ AWS Architecture.html b/docs/AcquireIQ AWS Architecture.html
+new file mode 100644
+index 0000000..0765401
+--- /dev/null
++++ b/docs/AcquireIQ AWS Architecture.html	
+@@ -0,0 +1,273 @@
++<!doctype html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>AcquireIQ on AWS</title>
++<meta name="claude:viewport-fit-sides" content="cover">
++<link rel="preconnect" href="https://fonts.googleapis.com">
++<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
++<style>
++/* VOICE work: a technical reference diagram for colleagues
++   IDEA an AWS architecture diagram: nested Cloud / Region / VPC / AZ / subnet boundaries with category-coloured service tiles
++   PICTURE the full deployment drawn as one diagram, numbered request path and lettered deploy path
++   COLOUR white ground, squid-ink #232F3E, AWS-style category tile colours, orange accent for the request path, blue for deploy
++   TYPE Inter 700 display + Inter
++   LAYOUT title and status across the top, diagram full width beneath, then flow legend in two columns, then component reference tables */
++:root{color-scheme:light dark;--bg:light-dark(#ffffff,#12161c);--ink:light-dark(#232f3e,#e6eaef);--muted:light-dark(#5b6675,#9aa5b3);--rule:light-dark(#d5dbe2,#2c3540);--panel:light-dark(#f5f7f9,#1a2029);--cloud:light-dark(#232f3e,#c9d2dc);--region:light-dark(#4a4a4a,#b8c0ca);--vpc:light-dark(#8c4fff,#b08cff);--az:light-dark(#8a96a5,#6d7a89);--subnet:light-dark(#e9f3e1,#1e2a1a);--subnetEdge:light-dark(#7aa116,#8fbf2a);--priv:light-dark(#e6f0fa,#16222e);--privEdge:light-dark(#4a4a4a,#b8c0ca);--boot:light-dark(#fff6e8,#2a2216);--bootEdge:light-dark(#d98b00,#e0a13a);--req:light-dark(#d55e00,#ff8a3d);--dep:light-dark(#0072b2,#56b4e9)}
++:root[data-theme=light]{color-scheme:light}
++:root[data-theme=dark]{color-scheme:dark}
++*{box-sizing:border-box;min-width:0}
++body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Inter,system-ui,sans-serif;overflow-x:clip}
++.band{padding-block:clamp(24px,3.5vw,48px);padding-left:max(5vw,16px,env(safe-area-inset-left,0px));padding-right:max(5vw,16px,env(safe-area-inset-right,0px))}
++.wrap{max-width:1240px;margin:0 auto}
++h1{font-size:clamp(32px,4.4vw,48px);line-height:1.05;letter-spacing:-.02em;margin:0 0 10px;font-weight:700}
++.lede{max-width:70ch;margin:0;color:var(--muted)}
++.status{display:inline-block;margin-top:12px;padding:4px 10px;border:1px solid var(--bootEdge);border-radius:6px;font-size:14px;background:var(--boot)}
++.scroll{overflow-x:auto;margin-top:20px;border:1px solid var(--rule);border-radius:10px}
++#dia{display:block;width:100%;min-width:980px;height:auto}
++#dia text{font-family:Inter,system-ui,sans-serif;fill:var(--ink)}
++.hint{font-size:13px;color:var(--muted);margin-top:6px}
++.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
++h2{font-size:26px;line-height:1.15;letter-spacing:-.01em;margin:0 0 12px}
++h3{font-size:18px;margin:28px 0 8px}
++ol.flow{list-style:none;margin:0;padding:0}
++ol.flow li{display:grid;grid-template-columns:30px 1fr;gap:10px;padding:8px 0;border-top:1px solid var(--rule)}
++.k{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff}
++.k.r{background:var(--req)}.k.d{background:var(--dep)}
++.key{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:14px;color:var(--muted);margin-top:10px}
++.key span{display:inline-flex;align-items:center;gap:8px}
++.key i{display:inline-block;width:34px;border-top:3px solid var(--req)}
++.key i.dash{border-top:3px dashed var(--dep)}
++table{width:100%;border-collapse:collapse;font-size:15px}
++th{text-align:left;font-weight:600;font-size:14px;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--ink)}
++td{padding:10px;border-bottom:1px solid var(--rule);vertical-align:top}
++td:first-child{font-weight:600;width:22%}
++td:nth-child(2){width:40%}
++.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:8px;vertical-align:-1px}
++code{font-size:.9em;background:var(--panel);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
++.note{font-size:14px;color:var(--muted);margin-top:14px}
++.warn{margin-top:14px;padding:12px 16px;border-left:5px solid #dd344c;background:light-dark(#fdecee,#2a1519);border-radius:6px;max-width:900px}
++.warn strong{display:block;margin-bottom:4px}
++.warn ol{margin:4px 0 0;padding-left:20px}
++@media(max-width:760px){.cols{grid-template-columns:minmax(0,1fr)}}
++@media(max-width:600px){table{font-size:14px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px;border-bottom:1px solid var(--rule)}.stack td{display:block;border:0;padding:3px 0;width:auto!important}.stack td::before{content:attr(data-l);display:block;font-size:12px;color:var(--muted);font-weight:500}}
++</style>
++</head>
++<body>
++
++<div class="band"><div class="wrap">
++  <h1>AcquireIQ on AWS</h1>
++  <p class="lede">How the app runs once <code>infra/main.tf</code> and <code>infra/bootstrap/main.tf</code> are applied: one HTTPS address in front, a private database behind, and a GitHub Actions workflow that builds and ships every release.</p>
++  <span class="status">Design from the Terraform files. Not yet deployed or tested against AWS.</span>
++  <div class="warn"><strong>Two major deficiencies, accepted for this demo</strong><ol><li><b>No API authentication.</b> Anyone with the URL can read, create and change acquisition requests and record approvals.</li><li><b>No rate limiting.</b> Anyone can flood the API, including the search endpoint that calls OpenAI. Set a monthly spending limit on the OpenAI key.</li></ol>Both must be added before this holds real data. Details are in the last section.</div>
++  <div class="scroll"><svg id="dia" viewBox="0 0 1240 790" role="img" aria-label="AWS architecture diagram of AcquireIQ"></svg></div>
++  <div class="key"><span><i></i>User request path, steps 1 to 6</span><span><i class="dash"></i>Deploy path, steps A to E</span></div>
++  <p class="hint">The API and the database each run in one zone, and AWS chooses which. The diagram shows one possible placement: the database could just as well be in Zone A's private subnet. On a narrow screen, scroll the diagram sideways.</p>
++</div></div>
++
++<div class="band" style="padding-top:0"><div class="wrap cols">
++  <div>
++    <h2>A visitor opens the app</h2>
++    <ol class="flow" id="req"></ol>
++  </div>
++  <div>
++    <h2>A release is deployed</h2>
++    <ol class="flow" id="dep"></ol>
++  </div>
++</div></div>
++
++<div class="band" style="padding-top:0"><div class="wrap">
++  <h2>Why some services sit outside the VPC</h2>
++  <p style="max-width:70ch;margin:0 0 12px">The VPC is the app's private network. Only things that need their own IP address in it go inside. Everything else is a service AWS runs itself and the app calls over HTTPS.</p>
++  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Where</th><th>Services</th><th>Why there, and what controls access</th></tr></thead><tbody>
++  <tr><td data-l="Where">Inside the VPC</td><td data-l="Services">Load balancer, API task, db-init task, RDS</td><td data-l="Why there, and what controls access">Each gets an IP address in the app's subnets. Security groups and route tables decide who can reach them.</td></tr>
++  <tr><td data-l="Where">Region, outside the VPC</td><td data-l="Services">S3, ECR, Secrets Manager, CloudWatch Logs, IAM</td><td data-l="Why there, and what controls access">Shared regional services run by AWS. They are not placed anywhere; the app calls them over HTTPS through the internet gateway. Access is controlled by IAM permissions, not network rules.</td></tr>
++  <tr><td data-l="Where">Global edge</td><td data-l="Services">CloudFront</td><td data-l="Why there, and what controls access">Runs in AWS edge locations worldwide, close to visitors. It reads the S3 bucket because the bucket policy allows only this distribution, and reaches the load balancer at its public address.</td></tr>
++  </tbody></table></div>
++  <p class="note">Optional VPC endpoints would give the VPC a private path to S3, ECR, Secrets Manager and CloudWatch so that traffic never crosses the internet. They are mainly useful with private subnets and no NAT gateway, and most have an hourly charge. Not needed for this demo.</p>
++</div></div>
++
++<div class="band" style="padding-top:0"><div class="wrap">
++  <h2>Why there is a load balancer with only one API task</h2>
++  <p style="max-width:70ch;margin:0 0 12px">With one API task the load balancer spreads nothing. Its job here is to give CloudFront one name that never changes, while the API's address changes every time ECS starts a new task. Addresses below are illustrative.</p>
++  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>When</th><th>API task address</th><th>What CloudFront points at</th></tr></thead><tbody>
++  <tr><td data-l="When">Monday, first deploy</td><td data-l="API task address"><code>10.20.0.37</code> (public <code>3.91.44.12</code>)</td><td data-l="What CloudFront points at"><code>acquireiq-1234567890.us-east-1.elb.amazonaws.com</code></td></tr>
++  <tr><td data-l="When">Wednesday, after a crash or new deploy</td><td data-l="API task address"><code>10.20.1.112</code> (public <code>54.210.8.77</code>). The old address is gone.</td><td data-l="What CloudFront points at">The same load balancer name. Nothing to update.</td></tr>
++  </tbody></table></div>
++  <h3>Who does what</h3>
++  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Who</th><th>Does what</th><th>Configured by</th></tr></thead><tbody>
++  <tr><td data-l="Who">AWS Fargate</td><td data-l="Does what">Gives each new API task a new IP address. Nobody picks it.</td><td data-l="Configured by">Automatic</td></tr>
++  <tr><td data-l="Who">ECS service</td><td data-l="Does what">Adds a new task's IP to the load balancer's target list when it starts, and removes the old IP when that task stops.</td><td data-l="Configured by"><code>load_balancer</code> block in <code>aws_ecs_service.backend</code></td></tr>
++  <tr><td data-l="Who">Load balancer</td><td data-l="Does what">Sends each request to whichever listed IP is passing health checks. It never changes any IP itself, and its own name stays fixed.</td><td data-l="Configured by"><code>aws_lb</code>, <code>aws_lb_target_group</code></td></tr>
++  <tr><td data-l="Who">CloudFront</td><td data-l="Does what">Always sends API calls to the load balancer's fixed name.</td><td data-l="Configured by"><code>domain_name = aws_lb.main.dns_name</code></td></tr>
++  </tbody></table></div>
++  <p class="note">Without a load balancer, CloudFront would point straight at the API's IP, and every crash or deploy would break the app until CloudFront was updated by hand. The load balancer also gives health checks and deploys without downtime. Its classic job, spreading load across several copies, starts automatically if <code>desired_count</code> is raised above 1.</p>
++</div></div>
++
++<div class="band" style="padding-top:0"><div class="wrap">
++  <h2>Every component and why it is there</h2>
++  <div id="ref"></div>
++  <h3>Major deficiencies, deliberately left out for this demo</h3>
++  <div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Item</th><th>Status</th><th>Consequence and safeguard</th></tr></thead><tbody>
++  <tr><td data-l="Item">API authentication</td><td data-l="Status">Not implemented. The backend has no login, session, token or API-key check.</td><td data-l="Consequence and safeguard">Anyone with the URL can read, create and change acquisition requests and record approvals. Acceptable for a demo with sample data only.</td></tr>
++  <tr><td data-l="Item">Rate limiting</td><td data-l="Status">Not implemented, in the code or in AWS.</td><td data-l="Consequence and safeguard">Someone could flood the API, including <code>/assist/query</code>, which calls OpenAI. Set a monthly spending limit in the OpenAI billing settings for this key, so the worst case is search stopping, not a surprise bill.</td></tr>
++  </tbody></table></div>
++  <p class="note">Tile colours use the Okabe-Ito colour-blind-safe palette, one colour per service category, and the diagram also separates things by line style and labels. Icons here are simplified drawings, not official AWS icons.</p>
++</div></div>
++
++<script>
++{
++const C={net:'#0072b2',cmp:'#e69f00',sto:'#009e73',db:'#56b4e9',sec:'#f0e442',mgt:'#cc79a7',ext:'#1a1a1a'};
++const DARK=new Set(['#e69f00','#56b4e9','#f0e442','#cc79a7']);
++const CAT=[['Networking',C.net],['Compute',C.cmp],['Storage',C.sto],['Database',C.db],['Security',C.sec],['Monitoring',C.mgt],['Outside AWS',C.ext]];
++const G={
++ globe:'<circle r="13" fill="none" stroke="currentColor" stroke-width="2.4"/><ellipse rx="5.5" ry="13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M-13 0H13M-11-7H11M-11 7H11" stroke="currentColor" stroke-width="1.8"/>',
++ lb:'<circle cx="-8" r="5" fill="currentColor"/><circle cx="10" cy="-10" r="4" fill="currentColor"/><circle cx="10" r="4" fill="currentColor"/><circle cx="10" cy="10" r="4" fill="currentColor"/><path d="M-4 0L7-10M-4 0H7M-4 0L7 10" stroke="currentColor" stroke-width="2"/>',
++ igw:'<rect x="-11" y="-13" width="22" height="26" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-4 0H9M5-4l4 4-4 4" stroke="currentColor" stroke-width="2.2" fill="none"/>',
++ box:'<path d="M0-14L13-7V7L0 14-13 7V-7Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-13-7L0 0 13-7M0 0V14" stroke="currentColor" stroke-width="2" fill="none"/>',
++ stack:'<rect x="-13" y="-13" width="26" height="7" rx="1.5" fill="currentColor"/><rect x="-13" y="-3.5" width="26" height="7" rx="1.5" fill="currentColor"/><rect x="-13" y="6" width="26" height="7" rx="1.5" fill="currentColor"/>',
++ bucket:'<path d="M-13-8L-9 13H9L13-8" fill="none" stroke="currentColor" stroke-width="2.4"/><ellipse cy="-8" rx="13" ry="4.5" fill="none" stroke="currentColor" stroke-width="2.4"/>',
++ db:'<ellipse cy="-9" rx="12" ry="4.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-12-9V9c0 6 24 6 24 0V-9M-12 0c0 6 24 6 24 0" fill="none" stroke="currentColor" stroke-width="2.4"/>',
++ key:'<circle cx="-6" cy="-4" r="7" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M-1 1L11 13M6 8l3-3M9 11l3-3" stroke="currentColor" stroke-width="2.6"/>',
++ shield:'<path d="M0-14L12-9V0c0 8-6 12-12 14C-6 12-12 8-12 0V-9Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M-5 0l4 4 7-8" stroke="currentColor" stroke-width="2.4" fill="none"/>',
++ chart:'<path d="M-13 12H13M-13 12V-13" stroke="currentColor" stroke-width="2.2"/><path d="M-9 6L-3-2 3 3 11-9" stroke="currentColor" stroke-width="2.6" fill="none"/>',
++ user:'<circle cy="-6" r="6" fill="currentColor"/><path d="M-12 13c0-9 5-12 12-12s12 3 12 12Z" fill="currentColor"/>',
++ api:'<text text-anchor="middle" y="5" font-size="14" font-weight="700" style="fill:currentColor">API</text>',
++ code:'<text text-anchor="middle" y="5" font-size="15" font-weight="700" style="fill:currentColor">&lt;/&gt;</text>'
++};
++// tiles: id, x, y, colour, glyph, label lines, label side (b below, r right)
++const T=[
++ ['users',95,95,C.ext,'user',['Users','(browser)'],'b'],
++ ['openai',95,355,C.ext,'api',['OpenAI API','(external)'],'b'],
++ ['gh',95,670,C.ext,'code',['GitHub','Actions'],'b'],
++ ['cf',440,95,C.net,'globe',['CloudFront','distribution'],'r'],
++ ['igw',250,355,C.net,'igw',['Internet','gateway'],'b'],
++ ['alb',512,252,C.net,'lb',['Application','Load Balancer'],'r'],
++ ['be',390,355,C.cmp,'box',['API','ECS Fargate task :3002'],'b'],
++ ['init',640,355,C.cmp,'box',['db-init task','one-off, each deploy'],'b'],
++ ['rds',640,495,C.db,'db',['RDS PostgreSQL 17'],'b'],
++ ['s3fe',955,250,C.sto,'bucket',['S3 frontend bucket','React build'],'b'],
++ ['sec',850,380,C.sec,'key',['Secrets','Manager'],'b'],
++ ['role',980,380,C.sec,'shield',['IAM task','execution role'],'b'],
++ ['logs',915,485,C.mgt,'chart',['CloudWatch Logs'],'b'],
++ ['oidc',330,665,C.sec,'shield',['IAM OIDC provider','+ GitHub deploy role'],'r'],
++ ['ecr',560,665,C.cmp,'stack',['ECR repositories','backend, db-init'],'r'],
++ ['state',790,665,C.sto,'bucket',['S3 state bucket','Terraform state'],'r']
++];
++const tile=([id,x,y,c,g,l,side])=>{
++ const lab=side==='r'
++  ? l.map((t,i)=>`<text x="${x+36}" y="${y-4+i*18}" font-size="14" font-weight="${i?400:600}">${t}</text>`).join('')
++  : l.map((t,i)=>`<text x="${x}" y="${y+44+i*17}" text-anchor="middle" font-size="14" font-weight="${i?400:600}">${t}</text>`).join('');
++ return `<g><rect x="${x-26}" y="${y-26}" width="52" height="52" rx="8" fill="${c}" stroke="#1a1a1a" stroke-opacity=".35"/><g transform="translate(${x} ${y})" style="color:${DARK.has(c)?'#111':'#fff'}">${G[g]}</g>${lab}</g>`;
++};
++const box=(x,y,w,h,stroke,label,o={})=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${o.r??6}" fill="${o.fill||'none'}" stroke="${stroke}" stroke-width="${o.sw||1.6}" ${o.dash?`stroke-dasharray="${o.dash}"`:''}/>`+
++ `<text x="${o.end?x+w-12:x+12}" y="${y+20}" text-anchor="${o.end?'end':'start'}" font-size="13" font-weight="600" style="fill:${stroke}">${label}</text>`;
++const line=(pts,cls)=>`<path d="M${pts.map(p=>p.join(' ')).join('L')}" fill="none" stroke="var(--${cls})" stroke-width="2.4" ${cls==='dep'?'stroke-dasharray="7 5"':''} marker-end="url(#a-${cls})"/>`;
++const badge=(x,y,t,cls)=>`<circle cx="${x}" cy="${y}" r="11" fill="var(--${cls})" stroke="var(--bg)" stroke-width="3"/><text x="${x}" y="${y+4.5}" text-anchor="middle" font-size="12.5" font-weight="700" style="fill:#fff">${t}</text>`;
++const tag=(x,y,t,a='start')=>`<text x="${x}" y="${y}" font-size="12.5" text-anchor="${a}" style="fill:var(--muted)">${t}</text>`;
++
++const s=document.getElementById('dia');
++s.innerHTML=`<defs>${['req','dep'].map(k=>`<marker id="a-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10Z" fill="var(--${k})"/></marker>`).join('')}</defs>
++${box(190,20,890,755,'var(--cloud)','AWS Cloud',{sw:2})}
++${box(210,150,850,615,'var(--region)','Region us-east-1',{dash:'2 4'})}
++${box(250,185,520,375,'var(--vpc)','AcquireIQ VPC',{sw:2})}
++${box(270,215,235,340,'var(--az)','Availability Zone A',{dash:'4 4'})}
++${box(520,215,235,340,'var(--az)','Availability Zone B',{dash:'4 4',end:1})}
++${box(282,288,211,142,'var(--subnetEdge)','Public subnet',{fill:'var(--subnet)'})}
++${box(532,288,211,142,'var(--subnetEdge)','Public subnet',{fill:'var(--subnet)'})}
++${box(282,440,211,108,'var(--privEdge)','Private subnet',{fill:'var(--priv)',dash:'2 3'})}
++${box(532,440,211,108,'var(--privEdge)','Private subnet',{fill:'var(--priv)',dash:'2 3'})}
++${tag(387,482,'Spare. RDS requires two zones.','middle')}${tag(387,499,'Used for a standby copy, or if','middle')}${tag(387,516,'AWS moves the database here.','middle')}
++
++${box(790,185,250,375,'var(--az)','Regional services')}
++${box(250,595,790,160,'var(--bootEdge)','Created once by infra/bootstrap',{fill:'var(--boot)'})}
++${line([[121,95],[408,95]],'req')}
++${line([[470,95],[955,95],[955,218]],'req')}
++${line([[440,123],[440,252],[480,252]],'req')}
++${line([[512,280],[512,300],[390,300],[390,323]],'req')}
++${line([[418,368],[512,368],[512,495],[608,495]],'req')}
++${line([[362,355],[282,355]],'req')}
++${line([[218,355],[127,355]],'req')}
++${line([[672,355],[728,355],[728,495],[672,495]],'dep')}
++${line([[121,656],[298,656]],'dep')}
++${line([[121,672],[150,672],[150,722],[560,722],[560,697]],'dep')}
++${line([[121,686],[134,686],[134,742],[790,742],[790,697]],'dep')}
++${line([[95,638],[95,578],[1052,578],[1052,250],[987,250]],'dep')}
++${badge(265,95,1,'req')}${badge(720,95,2,'req')}${badge(440,138,3,'req')}${badge(450,300,4,'req')}${badge(562,495,5,'req')}${badge(170,355,6,'req')}
++${badge(230,656,'A','dep')}${badge(355,722,'B','dep')}${badge(470,742,'C','dep')}${badge(728,420,'D','dep')}${badge(1052,420,'E','dep')}
++${tag(720,82,'/acquireiq/* (cached)','middle')}
++${tag(452,170,'API paths')}
++${tag(265,82,'HTTPS','middle')}
++${T.map(tile).join('')}
++<text x="1098" y="60" font-size="13" font-weight="600">Tile colours</text>
++${CAT.map(([n,c],i)=>`<rect x="1098" y="${74+i*30}" width="20" height="20" rx="4" fill="${c}" stroke="#1a1a1a" stroke-opacity=".35"/><text x="1126" y="${89+i*30}" font-size="13">${n}</text>`).join('')}
++<text x="1098" y="310" font-size="13" font-weight="600">Lines</text>
++<path d="M1098 330H1140" stroke="var(--req)" stroke-width="3"/><text x="1148" y="334" font-size="13">Request</text>
++<path d="M1098 356H1140" stroke="var(--dep)" stroke-width="3" stroke-dasharray="7 5"/><text x="1148" y="360" font-size="13">Deploy</text>
++<text x="1098" y="394" font-size="13" font-weight="600">Subnets</text>
++<rect x="1098" y="406" width="36" height="18" rx="3" fill="var(--subnet)" stroke="var(--subnetEdge)" stroke-width="1.6"/><text x="1142" y="420" font-size="13">Public</text>
++<rect x="1098" y="434" width="36" height="18" rx="3" fill="var(--priv)" stroke="var(--privEdge)" stroke-width="1.6" stroke-dasharray="2 3"/><text x="1142" y="448" font-size="13">Private</text>`;
++
++const req=[
++ ['1','The browser loads <code>https://&lt;id&gt;.cloudfront.net/acquireiq/</code>. CloudFront terminates HTTPS and redirects any plain HTTP request.'],
++ ['2','Paths under <code>/acquireiq/</code> are the React build. CloudFront reads them from the private S3 bucket and caches them at the edge.'],
++ ['3','<code>/api/*</code>, <code>/requests*</code>, <code>/dashboard*</code> and <code>/assist/*</code> are sent uncached to the load balancer on port 80. The browser only ever sees one address.'],
++ ['4','The load balancer forwards to the API task on port 3002. Every 30 seconds it also calls <code>/api/health</code>. If that fails twice in a row, the task is marked unhealthy, and ECS stops it and starts a replacement. With only one task there is a gap of a minute or two: API calls fail (the load balancer answers 503), the React app retries each call twice, then shows <em>Backend unavailable</em>. The page itself still loads from S3. All of this is automatic, with nothing to set up.'],
++ ['5','The API queries PostgreSQL on port 5432 over TLS, connecting as <code>acquireiq_app</code>.'],
++ ['6','For natural-language search, the API calls the OpenAI API out through the internet gateway.']
++];
++const dep=[
++ ['A','The workflow logs in to AWS by trading GitHub\'s short-lived OIDC token for the deploy role. No AWS keys are stored in GitHub.'],
++ ['B','It builds the backend and db-init images and pushes them to ECR, tagged with the commit SHA.'],
++ ['C','It runs <code>terraform apply</code>, which locks and updates the state in the S3 state bucket and creates or changes everything else in the diagram.'],
++ ['D','It starts the db-init task inside the VPC, which creates or updates the schema in RDS. GitHub cannot reach the private database directly.'],
++ ['E','It builds the frontend, uploads it to the S3 frontend bucket, clears the CloudFront cache and checks <code>/api/health</code>.']
++];
++const li=(cls)=>([k,t])=>`<li><span class="k ${cls}">${k}</span><span>${t}</span></li>`;
++document.getElementById('req').innerHTML=req.map(li('r')).join('');
++document.getElementById('dep').innerHTML=dep.map(li('d')).join('');
++
++const R=[
++ ['Edge',C.net,[
++  ['CloudFront distribution','Default <code>*.cloudfront.net</code> certificate. Static files cached with the managed CachingOptimized policy. API paths uncached, forwarding all viewer headers except Host.','The single public HTTPS entry point. Serving the frontend and API from one origin avoids CORS and mixed-content problems and keeps the load balancer off the open internet.']
++ ]],
++ ['Network',C.net,[
++  ['AcquireIQ VPC','Its own network, <code>10.20.0.0/16</code>, across two Availability Zones.','Keeps the app separate from anything else in the AWS account.'],
++  ['Public subnets','<code>10.20.0.0/24</code> and <code>10.20.1.0/24</code>, one per zone, routed to the internet gateway. Hold the load balancer and, by default, the API and db-init tasks with public IPs.','Where anything that must reach or be reached from the internet lives. The tasks are still only reachable from the load balancer.'],
++  ['Private subnets','<code>10.20.10.0/24</code> and <code>10.20.11.0/24</code>, one per zone, with no route from the internet. Hold the database. Setting <code>use_nat_gateway = true</code> moves the tasks here too.','Puts the database where nothing on the internet can reach it, whatever its other settings say.'],
++  ['NAT gateway (optional)','Off by default. When on, one NAT gateway in the first public subnet gives private tasks outbound internet access.','Lets the API sit in a private subnet and still call OpenAI and pull images. Adds an hourly charge.'],
++  ['Internet gateway','Attached to the AcquireIQ VPC.','Lets the tasks reach OpenAI, ECR and Secrets Manager outbound. Nothing inbound reaches the tasks except through the load balancer.'],
++  ['Application Load Balancer','HTTP listener on port 80. IP target group on port 3002 with a health check on <code>/api/health</code>.','Spreads requests to healthy API tasks and gives CloudFront a stable address to forward API traffic to.'],
++  ['Security groups','<code>acquireiq-alb</code> allows port 80 from CloudFront\'s IP ranges only. <code>acquireiq-ecs</code> allows 3002 from the load balancer. <code>acquireiq-db</code> allows 5432 from the ECS group.','A one-way chain so each layer can only be reached from the layer in front of it.']
++ ]],
++ ['Compute',C.cmp,[
++  ['ECS cluster and API service','Cluster <code>acquireiq</code>. One Fargate task with 0.25 vCPU and 512 MB, running the image from <code>backend/Dockerfile</code>.','Runs the Node and Express API with no servers to patch. ECS restarts the task if it fails.'],
++  ['db-init task','One-off Fargate task from <code>postgres:17-alpine</code> carrying <code>setup-database.sql</code>. Started by the workflow on every deploy.','Creates or updates the schema and the app role from inside the VPC, since the database is private.']
++ ]],
++ ['Data',C.db,[
++  ['RDS for PostgreSQL','Version 17 on <code>db.t4g.micro</code>, 20 GB, single AZ, not publicly accessible. <code>skip_final_snapshot</code> is on.','The application\'s data store. Private so only the API and db-init tasks can connect.'],
++  ['S3 frontend bucket','Private bucket with all public access blocked. Readable only by this CloudFront distribution through origin access control. Files live under <code>acquireiq/</code>.','Holds the built React files that CloudFront serves.']
++ ]],
++ ['Security and secrets',C.sec,[
++  ['Secrets Manager','Four secrets: <code>DATABASE_URL</code>, <code>OPENAI_API_KEY</code>, <code>DB_MASTER_PASSWORD</code>, <code>DB_APP_PASSWORD</code>.','Keeps credentials out of the image and task definition. ECS injects them as environment variables when a task starts.'],
++  ['IAM task execution role','AWS managed ECS execution policy plus read access to the four secrets only.','Lets ECS pull images, write logs and read secrets on the tasks\' behalf.'],
++  ['IAM OIDC provider and deploy role','Trusts GitHub tokens from <code>LeeLinkoff/acquireiq</code> on <code>main</code> only. Currently has AdministratorAccess.','Lets the workflow act in AWS without stored keys. The broad permission is a known gap to narrow later.']
++ ]],
++ ['Operations',C.mgt,[
++  ['CloudWatch Logs','Log groups <code>/ecs/acquireiq-backend</code> and <code>/ecs/acquireiq-db-init</code>, kept 14 days.','Where to look first when the API or a schema update fails.']
++ ]],
++ ['Created once by the bootstrap',C.sto,[
++  ['S3 state bucket','Versioned, encrypted, public access blocked, protected from <code>terraform destroy</code>. Locked during applies with Terraform\'s S3 lockfile.','Stores Terraform\'s record of what exists, so every workflow run picks up where the last left off.'],
++  ['ECR repositories','<code>acquireiq-backend</code> and <code>acquireiq-db-init</code>.','Private registries the workflow pushes images to before Terraform references them.']
++ ]],
++ ['Outside AWS',C.ext,[
++  ['GitHub Actions','Workflow <code>deploy-to-aws.yml</code>, started by hand from the Actions tab.','Builds, applies Terraform, sets up the database and ships the frontend in one run.'],
++  ['OpenAI API','Called by the API with the key from Secrets Manager.','Interprets natural-language search into structured filters.']
++ ]]
++];
++document.getElementById('ref').innerHTML=R.map(([g,c,rows])=>`<h3><span class="sw" style="background:${c}"></span>${g}</h3><div class="scroll" style="border:0;margin:0"><table class="stack"><thead><tr><th>Component</th><th>In this setup</th><th>Purpose</th></tr></thead><tbody>${rows.map(r=>`<tr><td data-l="Component">${r[0]}</td><td data-l="In this setup">${r[1]}</td><td data-l="Purpose">${r[2]}</td></tr>`).join('')}</tbody></table></div>`).join('');
++}
++</script>
++</body>
++</html>
+diff --git a/docs/AcquireIQ AWS Architecture.png b/docs/AcquireIQ AWS Architecture.png
+new file mode 100644
+index 0000000..1f8bf68
+Binary files /dev/null and b/docs/AcquireIQ AWS Architecture.png differ
+diff --git a/infra/bootstrap/main.tf b/infra/bootstrap/main.tf
+new file mode 100644
+index 0000000..35ff1bd
+--- /dev/null
++++ b/infra/bootstrap/main.tf
+@@ -0,0 +1,157 @@
++# ============================================================
++# AcquireIQ AWS bootstrap. Run ONCE from your PC with admin
++# credentials, before the deploy-to-aws workflow can run.
++#
++# Creates what the workflow needs but cannot create for itself:
++#   - S3 bucket that stores the main Terraform state
++#   - ECR repositories the workflow pushes images to
++#   - GitHub OIDC provider + IAM role the workflow logs in with
++#     (no AWS keys stored in GitHub)
++#
++# Usage, from infra/bootstrap:
++#   terraform init
++#   terraform apply
++# Then copy the outputs into GitHub repository secrets.
++#
++# State for this folder stays local (terraform.tfstate here).
++# It holds no secrets, but keep it; it is needed to change or
++# remove these resources later.
++# ============================================================
++
++terraform {
++  required_version = ">= 1.10"
++  required_providers {
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 6.0"
++    }
++  }
++}
++
++provider "aws" {
++  region = var.region
++}
++
++variable "region" {
++  default = "us-east-1"
++}
++
++variable "app" {
++  default = "acquireiq"
++}
++
++# Only workflows from this repo's main branch may assume the role.
++variable "github_repo" {
++  default = "LeeLinkoff/acquireiq"
++}
++
++# ------------------------------------------------------------
++# Terraform state bucket
++# Versioned so a bad apply can be rolled back. prevent_destroy
++# stops an accidental terraform destroy from wiping state.
++# ------------------------------------------------------------
++
++resource "aws_s3_bucket" "tfstate" {
++  bucket_prefix = "${var.app}-tfstate-"
++
++  lifecycle {
++    prevent_destroy = true
++  }
++}
++
++resource "aws_s3_bucket_versioning" "tfstate" {
++  bucket = aws_s3_bucket.tfstate.id
++  versioning_configuration {
++    status = "Enabled"
++  }
++}
++
++resource "aws_s3_bucket_server_side_encryption_configuration" "tfstate" {
++  bucket = aws_s3_bucket.tfstate.id
++  rule {
++    apply_server_side_encryption_by_default {
++      sse_algorithm = "AES256"
++    }
++  }
++}
++
++resource "aws_s3_bucket_public_access_block" "tfstate" {
++  bucket                  = aws_s3_bucket.tfstate.id
++  block_public_acls       = true
++  block_public_policy     = true
++  ignore_public_acls      = true
++  restrict_public_buckets = true
++}
++
++# ------------------------------------------------------------
++# Container registries
++# Live here, not in ../main.tf, so the workflow can push images
++# before the main apply references them.
++# ------------------------------------------------------------
++
++# Backend API image, built from backend/Dockerfile.
++resource "aws_ecr_repository" "backend" {
++  name         = "${var.app}-backend"
++  force_delete = true
++}
++
++# One-off database setup image, built from infra/db-init/Dockerfile.
++resource "aws_ecr_repository" "db_init" {
++  name         = "${var.app}-db-init"
++  force_delete = true
++}
++
++# ------------------------------------------------------------
++# GitHub Actions login (OIDC)
++# GitHub issues a short-lived token per run; AWS trades it for
++# temporary credentials for the role below.
++#
++# An AWS account can have only one provider for this URL. If
++# apply fails because it already exists, import it instead:
++#   terraform import aws_iam_openid_connect_provider.github <its ARN>
++# ------------------------------------------------------------
++
++resource "aws_iam_openid_connect_provider" "github" {
++  url            = "https://token.actions.githubusercontent.com"
++  client_id_list = ["sts.amazonaws.com"]
++}
++
++resource "aws_iam_role" "github_deploy" {
++  name = "${var.app}-github-deploy"
++  assume_role_policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [{
++      Effect    = "Allow"
++      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
++      Action    = "sts:AssumeRoleWithWebIdentity"
++      Condition = {
++        StringEquals = {
++          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
++          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
++        }
++      }
++    }]
++  })
++}
++
++# Terraform creates IAM roles, networking, RDS and more, so the
++# deploy role needs broad rights. Narrow this to the specific
++# services in ../main.tf before treating it as production.
++resource "aws_iam_role_policy_attachment" "github_deploy" {
++  role       = aws_iam_role.github_deploy.name
++  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
++}
++
++# ------------------------------------------------------------
++# Outputs. Add these as GitHub repository secrets.
++# ------------------------------------------------------------
++
++# GitHub secret TF_STATE_BUCKET
++output "tf_state_bucket" {
++  value = aws_s3_bucket.tfstate.bucket
++}
++
++# GitHub secret AWS_ROLE_ARN
++output "github_deploy_role_arn" {
++  value = aws_iam_role.github_deploy.arn
++}
+diff --git a/infra/db-init/Dockerfile b/infra/db-init/Dockerfile
+new file mode 100644
+index 0000000..d991c46
+--- /dev/null
++++ b/infra/db-init/Dockerfile
+@@ -0,0 +1,10 @@
++# One-off database setup image. The deploy-to-aws workflow runs
++# it as an ECS task inside the VPC, since RDS is not reachable
++# from GitHub's runners. Build from the repository root:
++#   docker build -f infra/db-init/Dockerfile .
++FROM postgres:17-alpine
++
++COPY backend/scripts/setup-database.sql /setup-database.sql
++COPY infra/db-init/init.sh /init.sh
++
++ENTRYPOINT ["/bin/sh", "/init.sh"]
+diff --git a/infra/db-init/init.sh b/infra/db-init/init.sh
+new file mode 100644
+index 0000000..1cda01a
+--- /dev/null
++++ b/infra/db-init/init.sh
+@@ -0,0 +1,26 @@
++#!/bin/sh
++# Creates or updates the AcquireIQ schema on RDS. Safe to run on
++# every deploy: setup-database.sql only creates what is missing.
++#
++# Connection comes from standard libpq env vars set by the ECS
++# task: PGHOST, PGUSER, PGPASSWORD, PGSSLMODE.
++# DB_APP_PASSWORD is the password the backend connects with.
++set -eu
++
++# 1. Create the app role with the real password before the
++#    bootstrap script runs, so its hardcoded local password is
++#    never used (the script skips an existing role).
++# 2. Let the RDS admin act as that role. RDS "postgres" is not a
++#    true superuser, and PostgreSQL 16+ requires this for
++#    CREATE DATABASE ... OWNER and SET ROLE in the script.
++psql -X -v ON_ERROR_STOP=1 -d postgres -v app_pw="$DB_APP_PASSWORD" <<'SQL'
++SELECT 'CREATE ROLE acquireiq_app LOGIN'
++WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'acquireiq_app')
++\gexec
++ALTER ROLE acquireiq_app PASSWORD :'app_pw';
++GRANT acquireiq_app TO CURRENT_USER WITH SET TRUE;
++SQL
++
++psql -X -v ON_ERROR_STOP=1 -d postgres -f /setup-database.sql
++
++echo "Database setup complete."
+diff --git a/infra/main.tf b/infra/main.tf
+new file mode 100644
+index 0000000..b78b982
+--- /dev/null
++++ b/infra/main.tf
+@@ -0,0 +1,749 @@
++# ============================================================
++# AcquireIQ on AWS
++#
++# Creates everything needed to run the app:
++#   CloudFront (HTTPS entry point)
++#     -> S3 bucket for the React frontend
++#     -> Application Load Balancer for API paths   (public subnets)
++#          -> ECS Fargate task running the backend (public or private subnets)
++#               -> RDS PostgreSQL                  (private subnets)
++#
++# Normally applied by .github/workflows/deploy-to-aws.yml.
++# Prerequisite: infra/bootstrap applied once (state bucket, ECR
++# repositories, GitHub deploy role).
++#
++# To run by hand from this folder instead:
++#   terraform init -backend-config="bucket=<tf_state_bucket output from bootstrap>"
++#   terraform plan
++#   terraform apply
++# Secret values come from TF_VAR_* environment variables or a
++# terraform.tfvars file, which must never be committed.
++# ============================================================
++
++terraform {
++  required_version = ">= 1.10"
++
++  # State lives in the bootstrap bucket, passed at init time with
++  # -backend-config="bucket=...". use_lockfile stops two applies
++  # from running at once (needs Terraform 1.10+).
++  backend "s3" {
++    key          = "acquireiq/terraform.tfstate"
++    region       = "us-east-1"
++    encrypt      = true
++    use_lockfile = true
++  }
++
++  required_providers {
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 6.0"
++    }
++  }
++}
++
++provider "aws" {
++  region = var.region
++}
++
++# ------------------------------------------------------------
++# Variables
++# ------------------------------------------------------------
++
++# AWS region for every resource.
++variable "region" {
++  default = "us-east-1"
++}
++
++# Prefix used in resource names.
++variable "app" {
++  default = "acquireiq"
++}
++
++# Image tag ECS runs, for both the backend and db-init images.
++# The workflow passes the git commit SHA.
++variable "image_tag" {
++  default = "latest"
++}
++
++# Password for the RDS "postgres" admin user. Used only by the
++# db-init task, never by the app.
++variable "db_master_password" {
++  type      = string
++  sensitive = true
++}
++
++# Password for the acquireiq_app role the backend connects as.
++# The db-init task sets the role to this password.
++variable "db_app_password" {
++  type      = string
++  sensitive = true
++}
++
++# OpenAI key for natural-language search.
++variable "openai_api_key" {
++  type      = string
++  sensitive = true
++}
++
++# Address range for the app's own VPC.
++variable "vpc_cidr" {
++  default = "10.20.0.0/16"
++}
++
++# false: backend tasks run in the public subnets with a public IP,
++#        locked down by their security group. No NAT cost.
++# true:  backend tasks run in the private subnets and reach the
++#        internet (OpenAI, ECR, Secrets Manager) through a NAT
++#        gateway. More isolated, but NAT has an hourly charge.
++variable "use_nat_gateway" {
++  type    = bool
++  default = false
++}
++
++# ------------------------------------------------------------
++# Network
++# A dedicated VPC across two Availability Zones:
++#   public subnets  - load balancer (and backend tasks unless
++#                     use_nat_gateway is true); route to the internet
++#   private subnets - database (and backend tasks when
++#                     use_nat_gateway is true); no inbound route
++#                     from the internet at all
++# ------------------------------------------------------------
++
++data "aws_availability_zones" "available" {
++  state = "available"
++}
++
++locals {
++  azs = slice(data.aws_availability_zones.available.names, 0, 2)
++
++  # Where backend and db-init tasks run, and whether they need a
++  # public IP to reach the internet.
++  task_subnets   = var.use_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
++  task_public_ip = !var.use_nat_gateway
++}
++
++resource "aws_vpc" "main" {
++  cidr_block           = var.vpc_cidr
++  enable_dns_support   = true
++  enable_dns_hostnames = true
++  tags                 = { Name = var.app }
++}
++
++resource "aws_internet_gateway" "main" {
++  vpc_id = aws_vpc.main.id
++  tags   = { Name = var.app }
++}
++
++# 10.20.0.0/24 and 10.20.1.0/24 with the default range.
++resource "aws_subnet" "public" {
++  count             = 2
++  vpc_id            = aws_vpc.main.id
++  availability_zone = local.azs[count.index]
++  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
++  tags              = { Name = "${var.app}-public-${local.azs[count.index]}" }
++}
++
++# 10.20.10.0/24 and 10.20.11.0/24 with the default range.
++resource "aws_subnet" "private" {
++  count             = 2
++  vpc_id            = aws_vpc.main.id
++  availability_zone = local.azs[count.index]
++  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
++  tags              = { Name = "${var.app}-private-${local.azs[count.index]}" }
++}
++
++# Public subnets send internet traffic to the internet gateway.
++resource "aws_route_table" "public" {
++  vpc_id = aws_vpc.main.id
++  tags   = { Name = "${var.app}-public" }
++
++  route {
++    cidr_block = "0.0.0.0/0"
++    gateway_id = aws_internet_gateway.main.id
++  }
++}
++
++resource "aws_route_table_association" "public" {
++  count          = 2
++  subnet_id      = aws_subnet.public[count.index].id
++  route_table_id = aws_route_table.public.id
++}
++
++# Private subnets have no internet route unless NAT is enabled.
++resource "aws_route_table" "private" {
++  vpc_id = aws_vpc.main.id
++  tags   = { Name = "${var.app}-private" }
++}
++
++resource "aws_route_table_association" "private" {
++  count          = 2
++  subnet_id      = aws_subnet.private[count.index].id
++  route_table_id = aws_route_table.private.id
++}
++
++# Optional NAT gateway, only when use_nat_gateway is true. One
++# NAT in the first AZ keeps cost down; it is a single point of
++# failure for outbound traffic from the private subnets.
++resource "aws_eip" "nat" {
++  count  = var.use_nat_gateway ? 1 : 0
++  domain = "vpc"
++  tags   = { Name = "${var.app}-nat" }
++}
++
++resource "aws_nat_gateway" "main" {
++  count         = var.use_nat_gateway ? 1 : 0
++  allocation_id = aws_eip.nat[0].id
++  subnet_id     = aws_subnet.public[0].id
++  tags          = { Name = var.app }
++
++  depends_on = [aws_internet_gateway.main]
++}
++
++resource "aws_route" "private_nat" {
++  count                  = var.use_nat_gateway ? 1 : 0
++  route_table_id         = aws_route_table.private.id
++  destination_cidr_block = "0.0.0.0/0"
++  nat_gateway_id         = aws_nat_gateway.main[0].id
++}
++
++# AWS-managed list of CloudFront's outbound IP ranges. Used so
++# only CloudFront can reach the load balancer.
++data "aws_ec2_managed_prefix_list" "cloudfront" {
++  name = "com.amazonaws.global.cloudfront.origin-facing"
++}
++
++# ------------------------------------------------------------
++# Security groups
++# Each layer accepts traffic only from the layer in front of it:
++# CloudFront -> ALB (80) -> ECS (3002) -> RDS (5432)
++# ------------------------------------------------------------
++
++# Load balancer: HTTP from CloudFront only.
++resource "aws_security_group" "alb" {
++  name   = "${var.app}-alb"
++  vpc_id = aws_vpc.main.id
++
++  ingress {
++    from_port       = 80
++    to_port         = 80
++    protocol        = "tcp"
++    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
++  }
++
++  egress {
++    from_port   = 0
++    to_port     = 0
++    protocol    = "-1"
++    cidr_blocks = ["0.0.0.0/0"]
++  }
++}
++
++# Backend tasks: port 3002 from the load balancer only. Outbound
++# is open so tasks can pull the image and call OpenAI.
++resource "aws_security_group" "ecs" {
++  name   = "${var.app}-ecs"
++  vpc_id = aws_vpc.main.id
++
++  ingress {
++    from_port       = 3002
++    to_port         = 3002
++    protocol        = "tcp"
++    security_groups = [aws_security_group.alb.id]
++  }
++
++  egress {
++    from_port   = 0
++    to_port     = 0
++    protocol    = "-1"
++    cidr_blocks = ["0.0.0.0/0"]
++  }
++}
++
++# Database: Postgres from the backend tasks only.
++resource "aws_security_group" "db" {
++  name   = "${var.app}-db"
++  vpc_id = aws_vpc.main.id
++
++  ingress {
++    from_port       = 5432
++    to_port         = 5432
++    protocol        = "tcp"
++    security_groups = [aws_security_group.ecs.id]
++  }
++}
++
++# ------------------------------------------------------------
++# Database (RDS PostgreSQL)
++# Private subnets, single-AZ, smallest Graviton instance. AWS
++# picks which of the two AZs it runs in. The schema is
++# created by the db-init ECS task (see infra/db-init), which the
++# workflow runs on every deploy.
++# ------------------------------------------------------------
++
++resource "aws_db_subnet_group" "db" {
++  name       = var.app
++  subnet_ids = aws_subnet.private[*].id
++}
++
++resource "aws_db_instance" "db" {
++  identifier             = var.app
++  engine                 = "postgres"
++  engine_version         = "17"
++  instance_class         = "db.t4g.micro"
++  allocated_storage      = 20
++  username               = "postgres"
++  password               = var.db_master_password
++  db_subnet_group_name   = aws_db_subnet_group.db.name
++  vpc_security_group_ids = [aws_security_group.db.id]
++  publicly_accessible    = false
++
++  # Demo setting: terraform destroy deletes the data with no
++  # backup. Set to false and add final_snapshot_identifier for
++  # anything real.
++  skip_final_snapshot = true
++}
++
++# ------------------------------------------------------------
++# Secrets Manager
++# ECS reads these at container start and passes them in as
++# environment variables, so they never appear in the task
++# definition or the image.
++# ------------------------------------------------------------
++
++# recovery_window_in_days = 0 deletes secrets immediately on
++# destroy, so a later apply can recreate the same names.
++#
++# RDS requires TLS. sslmode=no-verify encrypts the connection but
++# skips certificate checks. Switch to the RDS CA bundle later.
++resource "aws_secretsmanager_secret" "database_url" {
++  name                    = "${var.app}/DATABASE_URL"
++  recovery_window_in_days = 0
++}
++
++resource "aws_secretsmanager_secret_version" "database_url" {
++  secret_id     = aws_secretsmanager_secret.database_url.id
++  secret_string = "postgresql://acquireiq_app:${var.db_app_password}@${aws_db_instance.db.address}:5432/acquireiq?sslmode=no-verify"
++}
++
++resource "aws_secretsmanager_secret" "openai" {
++  name                    = "${var.app}/OPENAI_API_KEY"
++  recovery_window_in_days = 0
++}
++
++resource "aws_secretsmanager_secret_version" "openai" {
++  secret_id     = aws_secretsmanager_secret.openai.id
++  secret_string = var.openai_api_key
++}
++
++# Used only by the db-init task.
++resource "aws_secretsmanager_secret" "db_master_password" {
++  name                    = "${var.app}/DB_MASTER_PASSWORD"
++  recovery_window_in_days = 0
++}
++
++resource "aws_secretsmanager_secret_version" "db_master_password" {
++  secret_id     = aws_secretsmanager_secret.db_master_password.id
++  secret_string = var.db_master_password
++}
++
++resource "aws_secretsmanager_secret" "db_app_password" {
++  name                    = "${var.app}/DB_APP_PASSWORD"
++  recovery_window_in_days = 0
++}
++
++resource "aws_secretsmanager_secret_version" "db_app_password" {
++  secret_id     = aws_secretsmanager_secret.db_app_password.id
++  secret_string = var.db_app_password
++}
++
++# ------------------------------------------------------------
++# Container registries (ECR)
++# Created by infra/bootstrap so the workflow can push images
++# before this apply runs. Looked up here by name.
++# ------------------------------------------------------------
++
++data "aws_ecr_repository" "backend" {
++  name = "${var.app}-backend"
++}
++
++data "aws_ecr_repository" "db_init" {
++  name = "${var.app}-db-init"
++}
++
++# ------------------------------------------------------------
++# IAM
++# Role ECS uses to start tasks: pull from ECR, write logs, and
++# read only the secrets above.
++# ------------------------------------------------------------
++
++resource "aws_iam_role" "task_exec" {
++  name = "${var.app}-task-exec"
++  assume_role_policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [{
++      Effect    = "Allow"
++      Principal = { Service = "ecs-tasks.amazonaws.com" }
++      Action    = "sts:AssumeRole"
++    }]
++  })
++}
++
++# AWS-managed policy covering ECR pulls and CloudWatch logs.
++resource "aws_iam_role_policy_attachment" "task_exec" {
++  role       = aws_iam_role.task_exec.name
++  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
++}
++
++resource "aws_iam_role_policy" "read_secrets" {
++  role = aws_iam_role.task_exec.id
++  policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [{
++      Effect   = "Allow"
++      Action   = "secretsmanager:GetSecretValue"
++      Resource = [
++        aws_secretsmanager_secret.database_url.arn,
++        aws_secretsmanager_secret.openai.arn,
++        aws_secretsmanager_secret.db_master_password.arn,
++        aws_secretsmanager_secret.db_app_password.arn,
++      ]
++    }]
++  })
++}
++
++# ------------------------------------------------------------
++# Backend (ECS Fargate)
++# ------------------------------------------------------------
++
++# Container stdout/stderr, kept 14 days.
++resource "aws_cloudwatch_log_group" "backend" {
++  name              = "/ecs/${var.app}-backend"
++  retention_in_days = 14
++}
++
++resource "aws_ecs_cluster" "main" {
++  name = var.app
++}
++
++# What to run: the backend image with 0.25 vCPU and 512 MB,
++# listening on 3002, with config from env vars and secrets.
++resource "aws_ecs_task_definition" "backend" {
++  family                   = "${var.app}-backend"
++  requires_compatibilities = ["FARGATE"]
++  network_mode             = "awsvpc"
++  cpu                      = 256
++  memory                   = 512
++  execution_role_arn       = aws_iam_role.task_exec.arn
++
++  container_definitions = jsonencode([{
++    name         = "backend"
++    image        = "${data.aws_ecr_repository.backend.repository_url}:${var.image_tag}"
++    essential    = true
++    portMappings = [{ containerPort = 3002 }]
++    environment = [
++      { name = "PORT", value = "3002" },
++      { name = "OPENAI_MODEL", value = "gpt-5.4-mini" },
++      { name = "LOG_LEVEL", value = "none" }
++    ]
++    secrets = [
++      { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
++      { name = "OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.openai.arn }
++    ]
++    logConfiguration = {
++      logDriver = "awslogs"
++      options = {
++        awslogs-group         = aws_cloudwatch_log_group.backend.name
++        awslogs-region        = var.region
++        awslogs-stream-prefix = "backend"
++      }
++    }
++  }])
++}
++
++# One-off task that creates or updates the schema. Not a service:
++# the workflow starts it with aws ecs run-task and waits for it
++# to exit. Runs in the ECS security group so RDS accepts it.
++resource "aws_cloudwatch_log_group" "db_init" {
++  name              = "/ecs/${var.app}-db-init"
++  retention_in_days = 14
++}
++
++resource "aws_ecs_task_definition" "db_init" {
++  family                   = "${var.app}-db-init"
++  requires_compatibilities = ["FARGATE"]
++  network_mode             = "awsvpc"
++  cpu                      = 256
++  memory                   = 512
++  execution_role_arn       = aws_iam_role.task_exec.arn
++
++  container_definitions = jsonencode([{
++    name      = "db-init"
++    image     = "${data.aws_ecr_repository.db_init.repository_url}:${var.image_tag}"
++    essential = true
++    environment = [
++      { name = "PGHOST", value = aws_db_instance.db.address },
++      { name = "PGUSER", value = "postgres" },
++      { name = "PGSSLMODE", value = "require" }
++    ]
++    secrets = [
++      { name = "PGPASSWORD", valueFrom = aws_secretsmanager_secret.db_master_password.arn },
++      { name = "DB_APP_PASSWORD", valueFrom = aws_secretsmanager_secret.db_app_password.arn }
++    ]
++    logConfiguration = {
++      logDriver = "awslogs"
++      options = {
++        awslogs-group         = aws_cloudwatch_log_group.db_init.name
++        awslogs-region        = var.region
++        awslogs-stream-prefix = "db-init"
++      }
++    }
++  }])
++}
++
++# Application Load Balancer in front of the tasks. Reached only
++# by CloudFront, so plain HTTP is fine here; viewers get HTTPS
++# from CloudFront.
++resource "aws_lb" "main" {
++  name               = var.app
++  load_balancer_type = "application"
++  subnets            = aws_subnet.public[*].id
++  security_groups    = [aws_security_group.alb.id]
++}
++
++# Fargate tasks register by IP. Unhealthy tasks are replaced if
++# /api/health stops answering.
++resource "aws_lb_target_group" "backend" {
++  name        = "${var.app}-backend"
++  port        = 3002
++  protocol    = "HTTP"
++  target_type = "ip"
++  vpc_id      = aws_vpc.main.id
++
++  # Checks /api/health every 30 seconds. Two failures in a row
++  # mark the task unhealthy; ECS then replaces it. Five passes in
++  # a row mark a new task healthy.
++  health_check {
++    path                = "/api/health"
++    interval            = 30
++    timeout             = 5
++    unhealthy_threshold = 2
++    healthy_threshold   = 5
++  }
++}
++
++resource "aws_lb_listener" "http" {
++  load_balancer_arn = aws_lb.main.arn
++  port              = 80
++  protocol          = "HTTP"
++
++  default_action {
++    type             = "forward"
++    target_group_arn = aws_lb_target_group.backend.arn
++  }
++}
++
++# Keeps one backend task running and registered with the ALB.
++# Without NAT, tasks sit in the public subnets and need a public
++# IP to pull the image and reach OpenAI; their security group
++# still only accepts traffic from the load balancer. With NAT,
++# they sit in the private subnets with no public IP.
++resource "aws_ecs_service" "backend" {
++  name            = "${var.app}-backend"
++  cluster         = aws_ecs_cluster.main.id
++  task_definition = aws_ecs_task_definition.backend.arn
++  desired_count   = 1
++  launch_type     = "FARGATE"
++
++  network_configuration {
++    subnets          = local.task_subnets
++    security_groups  = [aws_security_group.ecs.id]
++    assign_public_ip = local.task_public_ip
++  }
++
++  load_balancer {
++    target_group_arn = aws_lb_target_group.backend.arn
++    container_name   = "backend"
++    container_port   = 3002
++  }
++
++  depends_on = [aws_lb_listener.http]
++}
++
++# ------------------------------------------------------------
++# Frontend (S3 + CloudFront)
++# The React build is uploaded to s3://<bucket>/acquireiq/ to
++# match the Vite base path. The bucket is private; only this
++# CloudFront distribution can read it.
++# ------------------------------------------------------------
++
++# bucket_prefix gives a globally unique name. force_destroy lets
++# terraform destroy remove it even when it contains files.
++resource "aws_s3_bucket" "frontend" {
++  bucket_prefix = "${var.app}-frontend-"
++  force_destroy = true
++}
++
++resource "aws_s3_bucket_public_access_block" "frontend" {
++  bucket                  = aws_s3_bucket.frontend.id
++  block_public_acls       = true
++  block_public_policy     = true
++  ignore_public_acls      = true
++  restrict_public_buckets = true
++}
++
++# Lets CloudFront sign its requests to the private bucket.
++resource "aws_cloudfront_origin_access_control" "frontend" {
++  name                              = "${var.app}-frontend"
++  origin_access_control_origin_type = "s3"
++  signing_behavior                  = "always"
++  signing_protocol                  = "sigv4"
++}
++
++# AWS-managed CloudFront policies, looked up by name.
++data "aws_cloudfront_cache_policy" "optimized" {
++  name = "Managed-CachingOptimized"
++}
++
++data "aws_cloudfront_cache_policy" "disabled" {
++  name = "Managed-CachingDisabled"
++}
++
++# Forwards headers, cookies and query strings to the API, but
++# not the Host header, so the ALB sees its own hostname.
++data "aws_cloudfront_origin_request_policy" "all_viewer" {
++  name = "Managed-AllViewerExceptHostHeader"
++}
++
++# One HTTPS address for everything. Static files come from S3
++# (cached). API paths go to the ALB (never cached). Because the
++# browser sees one origin, there are no CORS or mixed-content
++# problems.
++resource "aws_cloudfront_distribution" "main" {
++  enabled = true
++
++  origin {
++    origin_id                = "s3"
++    domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
++    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
++  }
++
++  origin {
++    origin_id   = "alb"
++    domain_name = aws_lb.main.dns_name
++    custom_origin_config {
++      http_port              = 80
++      https_port             = 443
++      origin_protocol_policy = "http-only"
++      origin_ssl_protocols   = ["TLSv1.2"]
++    }
++  }
++
++  # Everything not matched below: frontend files from S3.
++  default_cache_behavior {
++    target_origin_id       = "s3"
++    viewer_protocol_policy = "redirect-to-https"
++    allowed_methods        = ["GET", "HEAD"]
++    cached_methods         = ["GET", "HEAD"]
++    cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
++  }
++
++  # Backend routes, matching backend/src/routes. Add a pattern
++  # here if a new top-level route is added to the backend.
++  dynamic "ordered_cache_behavior" {
++    for_each = ["/api/*", "/requests*", "/dashboard*", "/assist/*"]
++    content {
++      path_pattern             = ordered_cache_behavior.value
++      target_origin_id         = "alb"
++      viewer_protocol_policy   = "redirect-to-https"
++      allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
++      cached_methods           = ["GET", "HEAD"]
++      cache_policy_id          = data.aws_cloudfront_cache_policy.disabled.id
++      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
++    }
++  }
++
++  restrictions {
++    geo_restriction {
++      restriction_type = "none"
++    }
++  }
++
++  # Default *.cloudfront.net certificate. Replace with an ACM
++  # certificate and add aliases to use your own domain.
++  viewer_certificate {
++    cloudfront_default_certificate = true
++  }
++}
++
++# Allows reads from the bucket only by this distribution.
++resource "aws_s3_bucket_policy" "frontend" {
++  bucket = aws_s3_bucket.frontend.id
++  policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [{
++      Effect    = "Allow"
++      Principal = { Service = "cloudfront.amazonaws.com" }
++      Action    = "s3:GetObject"
++      Resource  = "${aws_s3_bucket.frontend.arn}/*"
++      Condition = { StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.main.arn } }
++    }]
++  })
++}
++
++# ------------------------------------------------------------
++# Outputs, printed after apply. View again with:
++#   terraform output
++# The workflow reads most of these to run later steps.
++# ------------------------------------------------------------
++
++# Address to open the app in a browser.
++output "app_url" {
++  value = "https://${aws_cloudfront_distribution.main.domain_name}/acquireiq/"
++}
++
++# Where the backend image is pushed.
++output "ecr_repository_url" {
++  value = data.aws_ecr_repository.backend.repository_url
++}
++
++# Where to upload the frontend build.
++output "frontend_bucket" {
++  value = aws_s3_bucket.frontend.bucket
++}
++
++# Database host.
++output "db_endpoint" {
++  value = aws_db_instance.db.address
++}
++
++# Used by the workflow to run the db-init task and wait on the service.
++output "ecs_cluster" {
++  value = aws_ecs_cluster.main.name
++}
++
++output "ecs_service" {
++  value = aws_ecs_service.backend.name
++}
++
++output "db_init_task_definition" {
++  value = aws_ecs_task_definition.db_init.arn
++}
++
++output "ecs_subnets" {
++  value = join(",", local.task_subnets)
++}
++
++# ENABLED or DISABLED, for the db-init task's network settings.
++output "ecs_assign_public_ip" {
++  value = local.task_public_ip ? "ENABLED" : "DISABLED"
++}
++
++output "ecs_security_group" {
++  value = aws_security_group.ecs.id
++}
++
++# Used by the workflow to clear the cache after a frontend upload.
++output "cloudfront_distribution_id" {
++  value = aws_cloudfront_distribution.main.id
++}
