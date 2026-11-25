@@ -4,6 +4,7 @@ The following would be appropriate extensions for a production implementation bu
 
 - Aggregate all request-validation errors and return them together instead of stopping at the first validation failure.
 - Add authentication and role-based authorization.
+- Add rate limiting, especially on `/assist/query`, which calls the LLM provider.
 - Enforce role-specific permissions so contracting officers can perform only the request status actions they are authorized to perform, while an approver can change only their own approval decision.
 - Add a complete user/role/permission administration model rather than relying on the challenge's current-user query parameter.
 - Add authorization checks consistently at the API/service boundary rather than relying on frontend visibility of actions.

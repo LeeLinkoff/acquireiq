@@ -118,8 +118,11 @@ jobs:
         env:
           POSTGRES_PASSWORD: acquireiq_ci_admin
           POSTGRES_DB: postgres
+        # Published on host port 55432, not 5432, so it never clashes
+        # with a PostgreSQL already running on the developer's machine
+        # when this job is run locally with act.
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s
@@ -127,7 +130,6 @@ jobs:
           --health-retries 12
     env:
       PORT: 3002
-      DATABASE_URL: postgresql://acquireiq_app:acquireiq_ci_app@127.0.0.1:5432/acquireiq
     defaults:
       run:
         working-directory: backend
@@ -140,19 +142,50 @@ jobs:
           node-version: '20'
 
       - name: Initialize disposable AcquireIQ database
+        # Connects with the psql client over the network rather than
+        # docker exec, so the same step works on GitHub's runners and
+        # locally under act. The address that reaches the PostgreSQL
+        # service differs: 127.0.0.1:55432 on GitHub's runners, and
+        # under act either the service name on port 5432 or
+        # host.docker.internal:55432 (Docker Desktop). The first that
+        # answers is used.
         env:
-          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          PGUSER: postgres
+          PGPASSWORD: acquireiq_ci_admin
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d postgres
+          if ! command -v psql >/dev/null 2>&1; then
+            SUDO=""; if command -v sudo >/dev/null 2>&1; then SUDO=sudo; fi
+            $SUDO apt-get update -qq && $SUDO apt-get install -y -qq postgresql-client >/dev/null
+          fi
+          DB_HOST=""
+          DB_PORT=""
+          for i in $(seq 1 5); do
+            for hp in 127.0.0.1:55432 postgres:5432 host.docker.internal:55432; do
+              h="${hp%:*}"; p="${hp#*:}"
+              if pg_isready -h "$h" -p "$p" -d postgres -t 2 >/dev/null 2>&1; then
+                DB_HOST="$h"; DB_PORT="$p"
+                break 2
+              fi
+            done
+            echo "Waiting for PostgreSQL ($i/5)..."
+            sleep 1
+          done
+          if [ -z "$DB_HOST" ]; then
+            echo "ERROR: PostgreSQL service did not answer on 127.0.0.1:55432, postgres:5432 or host.docker.internal:55432."
+            exit 1
+          fi
+          echo "PostgreSQL reachable at $DB_HOST:$DB_PORT"
+          export PGHOST="$DB_HOST" PGPORT="$DB_PORT"
           # Precreate the application role with CI-only credentials. The
           # unchanged bootstrap skips role creation when the role exists.
-          docker exec "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
+          psql -X -d postgres -v ON_ERROR_STOP=1 \
             -c "CREATE ROLE acquireiq_app LOGIN PASSWORD 'acquireiq_ci_app';"
           # psql is required: the bootstrap creates the database, uses
           # backslash commands, reconnects, and changes the active role.
-          docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
-            < scripts/setup-database.sql
+          psql -X -d postgres -v ON_ERROR_STOP=1 -f scripts/setup-database.sql
+          echo "DATABASE_URL=postgresql://acquireiq_app:acquireiq_ci_app@${DB_HOST}:${DB_PORT}/acquireiq" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: npm install
@@ -181,6 +214,8 @@ jobs:
           npm run build
           nohup node dist/server.js > server.log 2>&1 &
           echo $! > server.pid
+          echo "Started backend PID $(cat server.pid) in $(pwd)"
+          echo "Log file: $(pwd)/server.log"
 
       - name: Wait for server to become healthy
         run: |
@@ -242,11 +277,25 @@ jobs:
         if: failure()
         run: |
           set -euo pipefail
+          echo "Working directory: $(pwd)"
           if [ -f server.log ]; then
             cat server.log
           else
-            echo "Backend log is unavailable; failure occurred before server startup."
+            echo "server.log not found in $(pwd)."
           fi
+          echo "---- Diagnostics ----"
+          if [ -f server.pid ]; then
+            echo "server.pid: $(cat server.pid)"
+            ps -o pid,stat,cmd -p "$(cat server.pid)" || echo "Process $(cat server.pid) is not running."
+          else
+            echo "server.pid not found."
+          fi
+          echo "Node processes:"
+          pgrep -a node || echo "none"
+          echo "Listening on port 3002:"
+          (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep ":3002" || echo "nothing"
+          echo "server.log files anywhere under the workspace:"
+          find "${GITHUB_WORKSPACE:-$(pwd)/..}" -name server.log 2>/dev/null || true
 
       - name: Stop server
         if: always()

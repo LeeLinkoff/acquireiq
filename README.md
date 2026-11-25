@@ -151,6 +151,7 @@ acquireiq/
 +-- .github/
 |   +-- workflows/
 |       +-- code-checks.yml
+|       +-- deploy-to-aws.yml
 |       +-- deploy-to-vps.yml
 |
 +-- backend/
@@ -226,6 +227,9 @@ acquireiq/
 |   +-- uninstall_act.bat
 |
 +-- docs/
+|   +-- AcquireIQ AWS Architecture.html
+|   +-- AcquireIQ AWS Architecture.png
+|   +-- AWS Terraform Setup.docx
 |   +-- Program_Specification_Checklist.docx
 |   +-- Requirements_Full.docx
 |
@@ -270,12 +274,24 @@ acquireiq/
 |   +-- README.md
 |   +-- vite.config.js
 |
++-- infra/
+|   +-- bootstrap/
+|   |   +-- main.tf
+|   |
+|   +-- db-init/
+|   |   +-- Dockerfile
+|   |   +-- init.sh
+|   |
+|   +-- main.tf
+|
 +-- secrets/
 |   +-- [local deployment/development secrets - not committed]
 |
++-- .gitattributes
 +-- .gitignore
 +-- ARCHITECTURE_AND_DEPLOYMENT.md
 +-- DESIGN_CONSIDERATIONS.md
++-- FUTURE_IMPROVEMENTS.md
 +-- README.md
 +-- REQUIREMENTS_TO_DESIGN_VERIFICATION.md
 +-- REQUEST_STATUS_STATE_MACHINE.md
@@ -564,7 +580,7 @@ Vite prints the local frontend URL when the development server starts.
 Because authentication is outside the challenge scope, the frontend accepts the acting user ID through the `user` query parameter. For example:
 
 ```text
-http://localhost:5173/acquireiq/?user=<user-id>
+http://localhost:5174/acquireiq/?user=<user-id>
 ```
 
 This query parameter is the challenge-permitted substitute for an authentication flow in the local implementation.
@@ -670,7 +686,17 @@ API failures, request-status conflicts, loading states, and AI uncertainty are r
 
 ## Testing
 
-Testing focuses on the behavior with the greatest correctness risk:
+Testing focuses on the behavior with the greatest correctness risk.
+
+The backend regression suite is [`dev_scripts/test-all-workflows.bat`](dev_scripts/test-all-workflows.bat). It runs on Windows with CMD and `curl` against the running backend at `http://localhost:3002`, creates its own fresh test data, and cleans it up afterward. It needs the database set up and seeded as described above, PostgreSQL's `psql.exe` installed under `C:\Program Files\PostgreSQL`, and a valid `OPENAI_API_KEY` in `backend/.env` for the AI-assisted search checks.
+
+From the repository root, with the backend running:
+
+```bat
+dev_scripts\test-all-workflows.bat
+```
+
+Output from a full passing run:
 
 ```text
 PASS: 111
@@ -679,19 +705,26 @@ TOTAL: 111
 ALL BACKEND REGRESSION TESTS PASSED.
 ```
 
--   valid status transitions
--   invalid status transitions
--   concurrent status-update attempts
--   request validation
--   request-detail behavior, including approvals, contract, and protests
--   approval decision recording, current/complete/future stage determination, stage advancement, and prevention of decisions on future stages
--   PostgreSQL primary-key sequence integrity
--   database enforcement of valid request statuses
--   AI structured-filter validation
--   hallucinated or malformed AI output
--   AI provider/fallback behavior
+The suite covers:
 
-Tests exercise backend business behavior independently of the React UI wherever practical.
+-   **Input validation:** invalid status values, nonexistent, malformed, and zero request IDs, missing properties, and malformed JSON bodies
+-   **Request-status transitions:** the full `draft → submitted → in_review → approved → awarded` path, both rejection paths, skipped transitions, backward moves, and terminal `awarded` and `rejected` states
+-   **Concurrency:** two simultaneous `draft → submitted` requests produce exactly one HTTP `200` and one HTTP `422`, leaving the request in `submitted`
+-   **Request collection and filtering:** listing, status filter, priority filter, combined filters, and rejection of invalid filter values
+-   **Request creation validation:** missing required fields, invalid priority, nonexistent requestor, and negative budget
+-   **Request detail:** approvals, parallel approval stages with multiple approvers, awarded contract and vendor, protests including unresolved protests, and `null` contract for non-awarded requests
+-   **Dashboard:** counts by status, total pipeline value, and open protest count
+-   **Approval decisions:** rejection of decisions on future stages, acceptance on the current stage, and stage advancement once the current stage is complete
+-   **AI-assisted search:** single, multiple, status, and budget-comparison filters returned in AI mode
+-   **AI input validation:** missing, empty, whitespace-only, and non-string queries, and malformed JSON
+-   **Adversarial AI output:** invented fields, unsupported operators, invalid priority values, out-of-range fiscal years, SQL-like values, `DROP TABLE` and `UNION SELECT` prompt injection, and nonsense queries, none of which escape validation
+-   **Post-adversarial integrity:** backend health, table queries, known request data, and relational joins still intact after the adversarial requests
+-   **Database integrity:** PostgreSQL primary-key sequences remain at or above the highest stored ID
+-   **Routing:** unknown API routes return HTTP `404`
+
+Tests exercise backend business behavior through the HTTP API, independently of the React UI.
+
+The `code-checks.yml` GitHub Actions workflow separately checks the frontend build, strict TypeScript compilation, and backend startup against a disposable PostgreSQL database on every push and pull request to `main`.
 
 ------------------------------------------------------------------------
 
@@ -775,14 +808,15 @@ It also addresses the five areas requested by the challenge:
 
 ## Documentation
 
-Supporting challenge materials are maintained under `docs/`. `Requirements_Full.docx` is a reference copy of the original iAdeptive challenge requirements captured from the challenge website because PDF/export methods did not preserve the source content and formatting reliably. The requirement text has been preserved, while highlighting, underlining, and other visual annotations were added during requirements review. The folder also contains the AcquireIQ implementation specification/checklist used to track the implementation against those requirements.
+Supporting challenge materials are maintained under `docs/`. `Requirements_Full.docx` is a reference copy of the original challenge requirements captured from the challenge website because PDF/export methods did not preserve the source content and formatting reliably. The requirement text has been preserved, while highlighting, underlining, and other visual annotations were added during requirements review. The folder also contains the AcquireIQ implementation specification/checklist used to track the implementation against those requirements, and the AWS deployment guide (`AWS Terraform Setup.docx`) and architecture diagram (`AcquireIQ AWS Architecture.html` and `.png`).
 
 The following repository documents describe the implemented system and the decisions made during the challenge:
 
 - [`DESIGN_CONSIDERATIONS.md`](DESIGN_CONSIDERATIONS.md) — the Lead Design Note, documenting key design decisions, tradeoffs, production considerations, deliberate scope limitations, and unresolved business requirements.
-- [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) — supplemental architecture and public deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture and optional portfolio deployment.
+- [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) — supplemental architecture and deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture, the planned VPS deployment, and the optional AWS deployment defined in `infra/`.
 - [`REQUIREMENTS_TO_DESIGN_VERIFICATION.md`](REQUIREMENTS_TO_DESIGN_VERIFICATION.md) — concise requirement-by-requirement verification of how the implementation and design address the challenge requirements.
 - [`REQUEST_STATUS_STATE_MACHINE.md`](REQUEST_STATUS_STATE_MACHINE.md) — the implemented acquisition-request status state machine, including valid transitions and terminal states.
+- [`FUTURE_IMPROVEMENTS.md`](FUTURE_IMPROVEMENTS.md): production extensions deliberately left out of scope, such as authentication, authorization, and rate limiting.
 - [`APPROVAL_STAGE_STATE_MACHINE.md`](APPROVAL_STAGE_STATE_MACHINE.md) — the separate approval-stage state machine, documenting PostgreSQL-derived `future`, `current`, and `complete` stage states, parallel approval behavior, database-enforced decision eligibility, and derived stage advancement.
 
 Together, these documents distinguish implemented behavior from deliberate design choices and functionality that would require additional business clarification before implementation. In particular, the separate state-machine documents make explicit that acquisition-request status progression and approval-stage progression are independent concepts in AcquireIQ because the challenge does not define a relationship between them.

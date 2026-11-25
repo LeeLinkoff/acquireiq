@@ -2,8 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  // Serve the AcquireIQ frontend under /acquireiq/.
-  base: '/acquireiq/',
+  // Serve the AcquireIQ frontend under /acquireiq/ by default.
+  // VITE_BASE_PATH overrides it at build time, e.g. /mvps/acquireiq/
+  // for the VPS deployment (see deploy-to-vps.yml).
+  base: process.env.VITE_BASE_PATH || '/acquireiq/',
 
   plugins: [react()],
 

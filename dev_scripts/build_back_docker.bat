@@ -12,7 +12,7 @@ REM
 REM Does NOT run the container afterward, this only builds the image.
 REM To run it locally after a successful build (from backend\, with a
 REM real .env present, see _env.example):
-REM   docker run -d --name ttb-label-verify-backend --restart unless-stopped -p 3002:3002 --env-file .env ttb-label-verify-backend
+REM   docker run -d --name acquireiq-backend --restart unless-stopped -p 127.0.0.1:3002:3002 --env-file .env acquireiq-backend
 REM
 REM Always builds with --no-cache. Docker's layer cache will happily
 REM reuse a stale COPY package.json layer if only the file's contents
@@ -22,7 +22,7 @@ REM you're testing what's actually on disk right now.
 
 set SCRIPT_DIR=%~dp0
 set BACKEND_DIR=%SCRIPT_DIR%..\backend
-set IMAGE_NAME=ttb-label-verify-backend
+set IMAGE_NAME=acquireiq-backend
 
 where docker >nul 2>nul
 if errorlevel 1 (

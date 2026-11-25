@@ -305,7 +305,7 @@ Schema generation runs before TypeScript compilation when required by the projec
 
 ## Testing
 
-The completed backend regression suite verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation, approval-decision behavior, PostgreSQL-derived approval-stage progression and current-stage decision enforcement, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
+The backend regression suite, [`dev_scripts/test-all-workflows.bat`](../dev_scripts/test-all-workflows.bat), runs against the backend at `http://localhost:3002` and verifies request validation, request collection/filter/create behavior, request detail, dashboard aggregation, sequential workflow transitions, concurrency-safe competing transitions, parallel approval representation, approval-decision behavior, PostgreSQL-derived approval-stage progression and current-stage decision enforcement, contract/protest response shape, missing-resource handling, AI structured-filter validation, AI fallback behavior, adversarial AI output handling, database integrity after adversarial AI requests, and PostgreSQL sequence integrity.
 
 The concurrency regression verifies that two competing transitions against the same request produce exactly one HTTP 200 response and one HTTP 422 response, with the final persisted state reflecting the successful transition.
 

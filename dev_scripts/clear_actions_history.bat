@@ -2,12 +2,12 @@
 REM ============================================================
 REM  clear_actions_history.bat
 REM  Deletes ALL GitHub Actions workflow runs for this repo
-REM  (both Code Checks and Deploy to VPS, and any others), via
+REM  (Code Checks, Deploy to VPS, Deploy to AWS, and any others), via
 REM  the gh CLI. Requires gh installed and authenticated
 REM  (gh auth login).
 REM ============================================================
 
-set "REPO=LeeLinkoff/ttb-label-verify"
+set "REPO=LeeLinkoff/acquireiq"
 
 gh --version >nul 2>&1
 if errorlevel 1 (

@@ -42,7 +42,7 @@ AcquireIQ supports a current-user ID through the `user` query parameter.
 Example:
 
 ```text
-http://localhost:5173/acquireiq/?user=<user-id>
+http://localhost:5174/acquireiq/?user=<user-id>
 ```
 
 The current-user mechanism provides application context without pretending to implement authentication or authorization.
@@ -55,11 +55,16 @@ Frontend API access is centralized in:
 src/api/client.js
 ```
 
-For local development, configure:
+For local development, leave `VITE_API_BASE` unset. The Vite dev server proxies `/api`, `/requests`, `/dashboard`, and `/assist` to the backend on `localhost:3002`, so the browser calls the API on the same origin.
+
+At build time, two variables control where the app is served:
 
 ```env
-VITE_API_BASE=http://localhost:3002
+VITE_BASE_PATH=/mvps/acquireiq/
+VITE_API_BASE=/mvps/acquireiq
 ```
+
+`VITE_BASE_PATH` sets the public path of the built app and defaults to `/acquireiq/`. `VITE_API_BASE` is prepended to every API call and defaults to empty. The VPS deployment sets both to `/mvps/acquireiq`; the AWS deployment uses the defaults.
 
 The backend exposes the AcquireIQ application APIs used by the frontend, including request collection/detail/create/status operations, approval decision operations, dashboard aggregation, AI-assisted search, and the backend health endpoint.
 
@@ -81,13 +86,13 @@ Open the Vite URL shown by the development server.
 The default local application URL is:
 
 ```text
-http://localhost:5173/acquireiq/
+http://localhost:5174/acquireiq/
 ```
 
 A current user can be supplied with:
 
 ```text
-http://localhost:5173/acquireiq/?user=<user-id>
+http://localhost:5174/acquireiq/?user=<user-id>
 ```
 
 ## AI-Assisted Search
@@ -168,9 +173,10 @@ Frontend modules should use the centralized logger rather than scattering direct
 Example local configuration:
 
 ```env
-VITE_API_BASE=http://localhost:3002
 VITE_LOG_LEVEL=none
 ```
+
+`VITE_BASE_PATH` and `VITE_API_BASE` are build-time settings described under API Boundary.
 
 Because Vite exposes `VITE_*` environment variables to browser code, passwords, database credentials, LLM API keys, access tokens, and other secrets must never be stored in `VITE_*` variables.
 

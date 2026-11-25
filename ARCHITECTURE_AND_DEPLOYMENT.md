@@ -1,10 +1,10 @@
 # AcquireIQ — Architecture and Deployment
 
-This document describes the AcquireIQ system architecture and the deployment path used for the public portfolio instance.
+This document describes the AcquireIQ system architecture and its optional public deployment.
 
-Deployment is not required by the iAdeptive challenge. It is included because the existing project scaffold already contains a proven CI/CD and VPS deployment pattern, making a live deployment relatively inexpensive to retain. The public instance also provides a durable, working example of the completed application beyond the assessment itself.
+Deployment is not required by the challenge. AcquireIQ has two deployment paths: a VPS deployment, the planned primary, run by `deploy-to-vps.yml`; and an optional AWS deployment, defined as Terraform in `infra/` and run by `deploy-to-aws.yml`. Neither has yet been run against a live environment.
 
-Some deployment details below are specific to the existing cPanel/Apache VPS. They are operational notes for maintaining this deployment, not claims that this is the preferred production architecture for a government acquisition system.
+The deployment described here is a demonstration deployment. It is not presented as the preferred production architecture for a government acquisition system.
 
 ---
 
@@ -18,16 +18,21 @@ Some deployment details below are specific to the existing cPanel/Apache VPS. Th
 Browser
    |
    v
-Apache / HTTPS
+HTTPS entry point (Apache on the VPS, or CloudFront on AWS)
    |
-   +-- /mvps/acquireiq/* ---------> React static build
+   +-- /acquireiq/* ---------------------------> React static build
    |
-   +-- /mvps/acquireiq/api/* -----> AcquireIQ backend container
-                                      |
-                                      +----> PostgreSQL
-                                      |
-                                      +----> LLM provider
+   +-- /api/*  /requests*  /dashboard*  /assist/*
+          |
+          v
+       AcquireIQ backend container (port 3002)
+          |
+          +----> PostgreSQL
+          |
+          +----> LLM provider
 ```
+
+The React build calls the API on the same origin. On the VPS, every path above sits under `/mvps/acquireiq`; on AWS the frontend is served at `/acquireiq/` and the API paths at the root. In local development the Vite dev server proxies the same API paths to the backend on `localhost:3002`.
 
 The browser never communicates directly with PostgreSQL or the LLM provider.
 
@@ -300,11 +305,11 @@ Reusing infrastructure is an engineering decision, not an attempt to treat old a
 
 ## 2.1 Why deploy when the challenge does not require it
 
-The iAdeptive challenge does not require production deployment or a publicly accessible instance.
+The challenge does not require production deployment or a publicly accessible instance.
 
-AcquireIQ will nevertheless be deployed to the existing VPS because the deployment scaffolding already exists and the incremental cost is small compared with standing up deployment infrastructure from scratch. This is also a deliberate decision to go beyond the challenge requirements: AcquireIQ is intended to remain available after the assessment as another public showcase of the engineering work, rather than existing only as a repository created for an interview exercise.
+AcquireIQ nevertheless includes a deployment path. This is a deliberate decision to go beyond the challenge requirements: AcquireIQ is intended to remain available after the assessment as another public showcase of the engineering work, rather than existing only as a repository created for an interview exercise.
 
-The live deployment therefore serves two purposes:
+A live deployment therefore serves two purposes:
 
 1. It gives reviewers an optional working instance in addition to the repository.
 2. It preserves AcquireIQ as a publicly accessible portfolio application demonstrating the completed architecture, backend, frontend, database, and AI integration.
@@ -315,309 +320,76 @@ The additional effort is a deliberate expansion of the project's purpose, not a 
 
 The repository remains the authoritative assessment deliverable.
 
-## 2.2 Public URL layout
+## 2.2 Deployment paths in this repository
 
-The intended public path is:
+| Path | Files | Status |
+| --- | --- | --- |
+| AWS (optional) | `infra/bootstrap/main.tf`, `infra/main.tf`, `infra/db-init/`, `.github/workflows/deploy-to-aws.yml` | Implemented as Terraform and a GitHub Actions workflow. Not yet applied to an AWS account. |
+| VPS (planned primary) | `.github/workflows/deploy-to-vps.yml`, `dev_scripts/deploy_setup.bat` | Workflow written for AcquireIQ. Needs one-time server setup (section 2.8). Not yet run. |
 
-```text
-https://leelinkoff.com/mvps/acquireiq/
-```
+The full AWS setup guide is `docs/AWS Terraform Setup.docx`. The architecture diagram with a per-component explanation is `docs/AcquireIQ AWS Architecture.html` (image: `docs/AcquireIQ AWS Architecture.png`).
 
-The frontend is served below:
-
-```text
-/mvps/acquireiq/
-```
-
-API traffic is routed below:
-
-```text
-/mvps/acquireiq/api/
-```
-
-The API prefix is intentionally application-specific. Multiple applications share the same Apache server, so AcquireIQ must not claim a generic domain-root `/api/` route that could collide with another deployed application.
-
-## 2.3 VPS layout
-
-The deployment follows the existing separation between source/build staging, the backend runtime container, and Apache's public static directory.
-
-Planned layout:
-
-```text
-/opt/acquireiq/
-|
-+-- backend/
-+-- frontend/
-    |
-    +-- dist/        generated frontend build
-```
-
-The public static frontend is copied to:
-
-```text
-/home/leelinko/public_html/mvps/acquireiq/
-```
-
-The backend source under `/opt/acquireiq/backend/` is used to build a Docker image. The running backend is a container created from that image.
-
-These are different things:
-
-```text
-backend/Dockerfile
-      |
-      | docker build
-      v
-AcquireIQ backend image
-      |
-      | docker run
-      v
-AcquireIQ backend container
-```
-
-The container is replaced during deployment rather than modified in place.
-
-## 2.4 Why Docker is retained
-
-The existing VPS does not have a usable native Node.js runtime. Previous deployment work on this server established that Node applications need to build and run inside containers rather than directly on the host.
-
-AcquireIQ therefore retains Docker for the backend.
-
-The frontend build can likewise run in a temporary Node container, after which only the generated static files need to be served by Apache.
-
-For this server, Docker is therefore not merely a packaging preference. It isolates the application from the host's unusable Node environment and reuses an already-proven deployment mechanism.
-
-## 2.5 Backend port
-
-The AcquireIQ backend needs its own unused internal host port.
-
-The exact port must be selected after checking the ports already allocated to applications on the VPS.
-
-Do not assume that the old template's port is available.
-
-Once selected, the container must bind only to loopback:
-
-```text
-127.0.0.1:<ACQUIREIQ_PORT>:<CONTAINER_PORT>
-```
-
-For example, if port `3003` is confirmed free and the application listens on `3003` inside the container:
-
-```bash
-docker run -d \
-  --name acquireiq-backend \
-  --restart unless-stopped \
-  -p 127.0.0.1:3003:3003 \
-  --env-file .env \
-  acquireiq-backend
-```
-
-The explicit `127.0.0.1` binding matters.
-
-This:
-
-```text
--p 3003:3003
-```
-
-normally publishes the port on all host interfaces.
-
-This:
-
-```text
--p 127.0.0.1:3003:3003
-```
-
-restricts the published host port to loopback so normal public API traffic must pass through Apache.
-
-The actual port will replace the placeholder/example after it is verified on the VPS.
-
-## 2.6 Apache reverse proxy
-
-Apache terminates public HTTPS and forwards AcquireIQ API requests to the loopback-bound backend container.
-
-The final rule should have this shape:
-
-```apache
-<IfModule mod_proxy.c>
-    ProxyPreserveHost On
-    ProxyPass "/mvps/acquireiq/api/" "http://127.0.0.1:<ACQUIREIQ_PORT>/api/"
-    ProxyPassReverse "/mvps/acquireiq/api/" "http://127.0.0.1:<ACQUIREIQ_PORT>/api/"
-</IfModule>
-```
-
-`<ACQUIREIQ_PORT>` must be replaced with the verified port before the configuration is installed.
-
-On this VPS, the existing Apache include used for application proxy rules is:
-
-```text
-/etc/apache2/conf.d/includes/post_virtualhost_global.conf
-```
-
-Because this is a shared Apache instance, always validate configuration before applying it:
-
-```bash
-apachectl -t
-```
-
-On this cPanel/EasyApache server, the previously verified reload mechanism is:
-
-```bash
-/usr/local/cpanel/scripts/restartsrv_httpd --graceful
-```
-
-That cPanel-specific behavior is retained because it was learned from direct operation of this server. It is not intended as generic Apache deployment guidance.
-
-## 2.7 Frontend base path
-
-AcquireIQ is hosted below a subpath rather than at the domain root.
-
-The frontend must therefore be built so asset paths and API paths work correctly below:
-
-```text
-/mvps/acquireiq/
-```
-
-The API client should derive the deployed API location from application/base configuration rather than hardcoding a domain-root `/api/` assumption.
-
-Local development and production should resolve to the same backend API contract even though the transport routing differs:
-
-```text
-Local development
-React/Vite -> local API or Vite proxy -> Express
-
-Production
-Browser -> /mvps/acquireiq/api/* -> Apache -> Express container
-```
-
-The exact Vite base/proxy configuration will be documented after it is implemented and tested.
-
-## 2.8 PostgreSQL deployment
-
-AcquireIQ introduces a persistent database requirement that the original generic scaffold did not provide.
-
-The final deployment must define:
-
-```text
-PostgreSQL host
-database name
-application database user
-connection configuration
-database bootstrap/schema initialization procedure
-seed procedure for the demo dataset
-backup/recovery expectations for the public demo
-```
-
-Credentials must be supplied through server-side configuration and must never be exposed through frontend `VITE_*` variables.
-
-The exact PostgreSQL hosting arrangement is intentionally not invented in this document. It will be recorded after the database is provisioned and verified on the deployment environment.
-
-## 2.9 LLM configuration
-
-The backend, not the browser, owns the LLM API credential.
-
-AcquireIQ uses OpenAI as its implemented LLM provider. The backend receives the provider credential through `OPENAI_API_KEY`, while `OPENAI_MODEL` optionally selects the model and defaults to `gpt-5.4-mini`.
-
-The frontend must never receive the provider secret.
-
-Conceptually:
+## 2.3 AWS architecture
 
 ```text
 Browser
-   |
+   |  HTTPS
    v
-AcquireIQ API
-   |
-   +---- server-side credential ----> LLM provider
+CloudFront
+   |-- /acquireiq/*                          --> S3 bucket (React build, private)
+   |-- /api/*  /requests*  /dashboard*  /assist/*
+          |
+          v
+   Application Load Balancer (public subnets)
+          |
+          v
+   ECS Fargate task running the backend image (port 3002)
+          |
+          +--> RDS PostgreSQL 17 (private subnets)
+          +--> OpenAI API
 ```
 
-These credentials and configuration values remain backend-only and are never exposed through frontend `VITE_*` environment variables.
+Key points:
 
-## 2.10 CI/CD
+- **One public address.** CloudFront serves the frontend and forwards the API paths to the load balancer, so the browser calls the API on the same origin and no CORS or mixed-content handling is needed.
+- **Network.** A dedicated VPC (`10.20.0.0/16`) across two Availability Zones. Public subnets hold the load balancer and, by default, the API task. Private subnets hold the database. An optional NAT gateway (`use_nat_gateway = true`) moves the API task into the private subnets.
+- **Security groups.** The load balancer accepts traffic only from CloudFront, the API task only from the load balancer, and the database only from the API and db-init tasks.
+- **Secrets.** `DATABASE_URL`, `OPENAI_API_KEY` and the database passwords are stored in AWS Secrets Manager and injected into the containers at start. None are stored in the image, the task definition, or a `VITE_*` variable.
+- **Database setup.** A one-off `db-init` ECS task creates the `acquireiq_app` role with the deployment password and runs `backend/scripts/setup-database.sql` inside the VPC. Seed data is not loaded automatically.
+- **Health and recovery.** The load balancer checks `/api/health` every 30 seconds. Two consecutive failures mark the task unhealthy, and ECS replaces it.
+- **Logs.** Backend and db-init container output goes to CloudWatch Logs.
 
-The repository retains the existing GitHub Actions deployment pattern.
+The AWS deployment uses the backend Docker image built from `backend/Dockerfile`, the same image used for local Docker builds.
 
-The intended pipeline is:
+## 2.4 AWS CI/CD
+
+A one-time bootstrap (`infra/bootstrap/main.tf`, run from a workstation) creates the Terraform state bucket, the ECR repositories, and a GitHub OIDC deploy role, so the workflow needs no stored AWS keys.
+
+`deploy-to-aws.yml` is started manually from the GitHub Actions tab:
 
 ```text
-Push to main
+Run workflow
      |
-     v
-Verify build
-     |
-     +-- backend dependencies
-     +-- generated schemas
-     +-- TypeScript check/build
-     +-- frontend dependencies
-     +-- frontend build
-     +-- tests/checks
-     |
-     v
-Deploy
-     |
-     +-- sync source to VPS staging path
-     +-- write server-side environment
-     +-- build backend Docker image
-     +-- replace backend container
-     +-- run frontend build
-     +-- publish frontend dist
-     +-- run public health check
+     +-- log in to AWS through GitHub OIDC
+     +-- build and push the backend and db-init images
+     +-- terraform apply
+     +-- run the db-init task, fail the deploy if it fails
+     +-- wait for the API service to become stable
+     +-- build the frontend, upload it to S3, clear the CloudFront cache
+     +-- check /api/health through CloudFront
 ```
 
-Deployment must not proceed if verification fails.
+Required repository secrets: `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, `DB_MASTER_PASSWORD`, `DB_APP_PASSWORD`, `OPENAI_API_KEY`.
 
-The existing workflow is scaffolding, not evidence that AcquireIQ deployment already works. Application names, paths, ports, environment variables, health URLs, and any old project-specific references must be changed and tested before the workflow is considered valid for AcquireIQ.
+`code-checks.yml` runs separately on every push and pull request to `main`: frontend build, strict TypeScript check, and a backend boot test against a disposable PostgreSQL container.
 
-## 2.11 Local workflow testing
+## 2.5 Local workflow testing
 
-The scaffold includes local workflow-testing support using `act`, plus pre-commit checks for workflow and shell syntax.
+The repository includes local workflow-testing support using `act`, plus pre-commit checks for workflow and shell syntax.
 
-Those tools remain useful because AcquireIQ is reusing the deployment pipeline shape.
+Local validation of a workflow does not prove the live deployment works. Public routing, networking, environment configuration, PostgreSQL connectivity, and the final health endpoint must still be tested against the real environment.
 
-The important distinction is that local validation of the workflow does not prove the live deployment works. Public routing, VPS paths, Docker networking, environment configuration, PostgreSQL connectivity, and the final health endpoint must still be tested against the actual server.
-
-## 2.12 Manual deployment fallback
-
-After the AcquireIQ-specific values are finalized, the automated deployment can be reproduced manually for debugging.
-
-Conceptually:
-
-```bash
-cd /opt/acquireiq/backend
-
-docker build -t acquireiq-backend .
-
-docker rm -f acquireiq-backend || true
-
-docker run -d \
-  --name acquireiq-backend \
-  --restart unless-stopped \
-  -p 127.0.0.1:<ACQUIREIQ_PORT>:<CONTAINER_PORT> \
-  --env-file .env \
-  acquireiq-backend
-```
-
-Frontend build:
-
-```bash
-docker run --rm \
-  -v "/opt/acquireiq/frontend:/app" \
-  -w /app \
-  node:20-alpine sh -c "npm install && npm run build"
-
-rsync -a --delete \
-  "/opt/acquireiq/frontend/dist/" \
-  "/home/leelinko/public_html/mvps/acquireiq/"
-```
-
-Public verification:
-
-```bash
-curl -f https://leelinkoff.com/mvps/acquireiq/api/health
-```
-
-Placeholders in these commands must be replaced with the implemented backend port before use.
-
-## 2.13 Deployment verification
+## 2.6 Deployment verification
 
 A successful process exit is not sufficient evidence of a successful deployment.
 
@@ -627,13 +399,7 @@ The deployment should verify each meaningful boundary:
 Backend container is running
         |
         v
-Backend responds on loopback
-        |
-        v
 PostgreSQL connectivity works
-        |
-        v
-Apache configuration is valid
         |
         v
 Public health endpoint responds
@@ -651,31 +417,67 @@ Core acquisition read/write flow works
 AI-assisted query works or exposes its intended fallback
 ```
 
-This distinguishes "the deploy command completed" from "the application is actually usable."
+`deploy-to-aws.yml` automates the container, database setup, and public health checks. The remaining steps are manual.
 
-## 2.14 Security notes for the public demo
+## 2.7 Security notes for the public demo
 
 The challenge permits authentication and deployment to be skipped, so the public portfolio deployment should not be mistaken for a production government system.
 
-At minimum:
+Two major deficiencies are accepted for this demo:
 
-- backend host ports should bind only to `127.0.0.1`
-- PostgreSQL should not be publicly exposed
-- database credentials and LLM credentials remain server-side
+1. **No API authentication.** Anyone with the URL can read, create, and change acquisition requests and record approvals.
+2. **No rate limiting.** Anyone can send unlimited requests, including to `/assist/query`, which calls the LLM provider. A monthly spending limit should be set on the LLM provider account.
+
+Both must be addressed before the deployment holds real data.
+
+Controls that are in place:
+
+- the API is reachable only through the load balancer on AWS, or through Apache with the container bound to `127.0.0.1` on the VPS
+- PostgreSQL is in private subnets and is not publicly accessible
+- database and LLM credentials remain server-side
 - secrets are excluded from source control
-- `VITE_*` variables must never contain secrets
-- SQL must remain server-owned and parameterized
-- LLM output must remain validated before database access
-- demo/seed data should contain no real sensitive acquisition information
-- CORS should be no broader than necessary for the deployed frontend
+- `VITE_*` variables never contain secrets
+- SQL remains server-owned and parameterized
+- LLM output is validated before database access
+- demo and seed data contain no real sensitive acquisition information
 
-Authentication is not required for the challenge. If the public instance permits mutations without authentication, that limitation must be considered explicitly before leaving it publicly writable.
+## 2.8 VPS deployment
 
-A practical portfolio deployment may expose read/demo behavior while restricting, resetting, or otherwise controlling mutations. The final choice should be documented after the live behavior is decided.
+`deploy-to-vps.yml` deploys to a Linux server running Apache and Docker. It is the planned primary deployment and runs automatically on every push to `main`, or by hand from the GitHub Actions tab. Until the server is set up, runs stop at the secrets or SSH check before changing anything.
 
-## 2.15 What would change for a real production system
+```text
+Browser
+   |  HTTPS
+   v
+Apache
+   |-- /mvps/acquireiq/                               --> static React build
+   |-- /mvps/acquireiq/api/  /requests  /dashboard  /assist/
+          |
+          v
+   backend container, 127.0.0.1:3002 only
+          |
+          +--> PostgreSQL on the server (host.docker.internal)
+          +--> OpenAI API
+```
 
-The VPS deployment is appropriate for a portfolio demonstration because the infrastructure already exists and the application is small.
+The workflow builds the frontend with `VITE_BASE_PATH=/mvps/acquireiq/` and `VITE_API_BASE=/mvps/acquireiq`, so assets and API calls stay under the application's path. It writes `backend/.env` from GitHub secrets on every run, rebuilds and restarts the backend container, publishes the static build, and checks the public health URL.
+
+One-time server setup, not done by the workflow:
+
+```text
+Docker installed, usable by the SSH user
+PostgreSQL installed, schema created with setup-database.sql,
+  and accepting connections from Docker containers
+Apache ProxyPass rules for the API paths (the workflow prints them
+  and stops if they are missing)
+static folder served by Apache at /mvps/acquireiq/
+host port 3002 free
+GitHub secrets set with dev_scripts\deploy_setup.bat
+```
+
+## 2.9 What would change for a real production system
+
+The demonstration deployment is appropriate for a portfolio application because the application is small.
 
 It is not presented as the target architecture for a real government contracting office.
 
@@ -708,26 +510,19 @@ Those concerns are deliberately separated from the challenge implementation so t
 
 ## 3.1 Current status
 
-The deployment scaffolding exists because AcquireIQ began from a reusable project template.
+Neither deployment has been run yet. The VPS server has not been set up, and the AWS Terraform has not been applied to an AWS account.
 
-That does not mean AcquireIQ is currently deployed.
-
-Before the public deployment is considered complete, the following application-specific values and behaviors must be verified:
+Before the public deployment is considered complete, the following must be verified against the real environment:
 
 ```text
-AcquireIQ public path
-AcquireIQ VPS project path
-unused backend host/container port
-Docker image/container names
-Apache ProxyPass rule
-Vite base path
-frontend API base behavior
-PostgreSQL deployment and credentials
-database bootstrap/schema initialization
-demo seed data
-LLM provider credentials
-GitHub Actions secrets/configuration
-public health check
+VPS: server set up and deploy-to-vps.yml succeeds
+AWS: terraform plan and apply succeed
+AWS: db-init task creates the schema on RDS
+demo seed data loaded
+API reaches PostgreSQL and the LLM provider
+frontend loads through CloudFront
+frontend can call the public API
+public health check passes
 end-to-end application behavior
 ```
 
@@ -737,6 +532,6 @@ This section should be updated as those items are completed.
 
 Deployment documentation should describe verified behavior.
 
-Template values are starting points, not facts about the AcquireIQ deployment. Any port, path, provider, database arrangement, environment variable, or public URL that has not yet been tested should remain explicitly identified as planned or provisional.
+Any port, path, provider, database arrangement, environment variable, or public URL that has not yet been tested should remain explicitly identified as planned or provisional.
 
 That distinction keeps the repository useful both as an assessment submission and as long-term documentation for the public portfolio instance.
