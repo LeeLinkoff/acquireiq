@@ -69,6 +69,8 @@ dev_reports/
 *.BAK
 *_bak
 *_BAK
+*.diff
+
 
 dist-ssr/
 *.local
