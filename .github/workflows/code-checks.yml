@@ -13,17 +13,17 @@ name: Code Checks (type-check + boot test)
 # Three jobs. frontend-build is independent and listed first; the
 # other two, in increasing order of what they actually require,
 # cover the backend:
-#   1. frontend-build — installs deps, runs the real production
+#   1. frontend-build: installs deps, runs the real production
 #      build (npm run build), and confirms dist/index.html actually
 #      got created. Independent of the other two jobs, runs in
 #      parallel, not sequentially after them.
-#   2. type-check — regenerates schemas.generated.ts from the current
+#   2. type-check: regenerates schemas.generated.ts from the current
 #      TypeScript contracts (swagger-spec.ts imports it),
 #      then confirms the full backend type-checks cleanly under
 #      strict: true (npx tsc --noEmit). Stronger than a plain-JS
 #      syntax check: this catches real type errors, not just parse
 #      errors. No secrets needed, always runs.
-#   3. boot-test — initializes a disposable PostgreSQL database with
+#   3. boot-test: initializes a disposable PostgreSQL database with
 #      scripts/setup-database.sql, installs deps, regenerates schemas,
 #      compiles (npm run build), and boots dist/server.js. Checks
 #      /api/health's JSON body, /api/docs, and a database-backed

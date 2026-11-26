@@ -55,7 +55,15 @@ export default function Dashboard()
           <div className="dashboard-summary">
             <div className="dashboard-metric">
               <span>Total Pipeline Value</span>
-              <strong>{dashboard.totalPipelineValue}</strong>
+              <strong>
+                {Number.isFinite(Number(dashboard.totalPipelineValue))
+                  ? new Intl.NumberFormat('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                      maximumFractionDigits: 0,
+                    }).format(Number(dashboard.totalPipelineValue))
+                  : dashboard.totalPipelineValue}
+              </strong>
             </div>
 
             <div className="dashboard-metric">

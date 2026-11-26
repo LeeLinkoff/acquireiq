@@ -112,7 +112,9 @@ export default function CreateRequest()
         <label>
           Requestor ID
           <input
-            type="text"
+            type="number"
+            min="1"
+            step="1"
             name="requestorId"
             value={formData.requestorId}
             onChange={handleChange}
@@ -132,13 +134,16 @@ export default function CreateRequest()
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="critical">Critical</option>
           </select>
         </label>
 
         <label>
           Budget Ceiling
           <input
-            type="text"
+            type="number"
+            min="0"
+            step="0.01"
             name="budgetCeiling"
             value={formData.budgetCeiling}
             onChange={handleChange}

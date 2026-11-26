@@ -83,7 +83,7 @@ The central design principle is simple: **AI output is useful input, but it is n
              |                                                         |
              | Acquisition Requests   Users       Vendors              |
              | Contracts              Approvals   Protests             |
-			 | Approval Stage Derivation + Decision Enforcement        |
+             | Approval Stage Derivation + Decision Enforcement        |
              +---------------------------------------------------------+
 ```
 
@@ -249,8 +249,6 @@ acquireiq/
 |   |   |   +-- MainContentCard.jsx
 |   |   |   +-- Message.jsx
 |   |   |   +-- Modal.jsx
-|   |   |   +-- PipelineFilters.jsx
-|   |   |   +-- RequestCard.jsx
 |   |   |   +-- RequestDetail.jsx
 |   |   |
 |   |   +-- logging/
@@ -650,9 +648,10 @@ The React application provides the user-facing interface for:
 -   visibly distinguishing normal results from AI
     fallback/low-confidence states
 
-The frontend does not duplicate authoritative request-status transition rules. It uses API responses to determine and display valid state, while the backend remains responsible for enforcing request-status transitions and database integrity.
+The frontend keeps a presentation-only copy of the request-status transition map (`frontend/src/components/RequestDetail.jsx`) so it offers only valid next-status actions. That copy is not authoritative: the backend independently validates every requested transition and remains responsible for enforcing request-status transitions and database integrity, and the UI displays the status returned by the API.
 
 The same separation applies to approvals. The React UI handles presentation and user interaction, while the backend invokes PostgreSQL's authoritative approval operation, interprets its result, and exposes PostgreSQL-derived stage state. PostgreSQL enforces whether an approval decision can be recorded and derives the `current`, `complete`, and `future` stage states. The UI uses those API-provided states to display the workflow and expose decision actions only where appropriate.
+
 ------------------------------------------------------------------------
 
 ## Design Principles
@@ -812,11 +811,11 @@ Supporting challenge materials are maintained under `docs/`. `Requirements_Full.
 
 The following repository documents describe the implemented system and the decisions made during the challenge:
 
-- [`DESIGN_CONSIDERATIONS.md`](DESIGN_CONSIDERATIONS.md) — the Lead Design Note, documenting key design decisions, tradeoffs, production considerations, deliberate scope limitations, and unresolved business requirements.
-- [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) — supplemental architecture and deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture, the planned VPS deployment, and the optional AWS deployment defined in `infra/`.
-- [`REQUIREMENTS_TO_DESIGN_VERIFICATION.md`](REQUIREMENTS_TO_DESIGN_VERIFICATION.md) — concise requirement-by-requirement verification of how the implementation and design address the challenge requirements.
-- [`REQUEST_STATUS_STATE_MACHINE.md`](REQUEST_STATUS_STATE_MACHINE.md) — the implemented acquisition-request status state machine, including valid transitions and terminal states.
-- [`FUTURE_IMPROVEMENTS.md`](FUTURE_IMPROVEMENTS.md): production extensions deliberately left out of scope, such as authentication, authorization, and rate limiting.
-- [`APPROVAL_STAGE_STATE_MACHINE.md`](APPROVAL_STAGE_STATE_MACHINE.md) — the separate approval-stage state machine, documenting PostgreSQL-derived `future`, `current`, and `complete` stage states, parallel approval behavior, database-enforced decision eligibility, and derived stage advancement.
+- [`DESIGN_CONSIDERATIONS.md`](DESIGN_CONSIDERATIONS.md) : the Lead Design Note, documenting key design decisions, tradeoffs, production considerations, deliberate scope limitations, and unresolved business requirements.
+- [`ARCHITECTURE_AND_DEPLOYMENT.md`](ARCHITECTURE_AND_DEPLOYMENT.md) : supplemental architecture and deployment documentation. Public deployment is not required by the challenge; this document describes the implemented architecture, the planned VPS deployment, and the optional AWS deployment defined in `infra/`.
+- [`REQUIREMENTS_TO_DESIGN_VERIFICATION.md`](REQUIREMENTS_TO_DESIGN_VERIFICATION.md) : concise requirement-by-requirement verification of how the implementation and design address the challenge requirements.
+- [`REQUEST_STATUS_STATE_MACHINE.md`](REQUEST_STATUS_STATE_MACHINE.md) : the implemented acquisition-request status state machine, including valid transitions and terminal states.
+- [`FUTURE_IMPROVEMENTS.md`](FUTURE_IMPROVEMENTS.md) : production extensions deliberately left out of scope, such as authentication, authorization, and rate limiting.
+- [`APPROVAL_STAGE_STATE_MACHINE.md`](APPROVAL_STAGE_STATE_MACHINE.md) : the separate approval-stage state machine, documenting PostgreSQL-derived `future`, `current`, and `complete` stage states, parallel approval behavior, database-enforced decision eligibility, and derived stage advancement.
 
 Together, these documents distinguish implemented behavior from deliberate design choices and functionality that would require additional business clarification before implementation. In particular, the separate state-machine documents make explicit that acquisition-request status progression and approval-stage progression are independent concepts in AcquireIQ because the challenge does not define a relationship between them.

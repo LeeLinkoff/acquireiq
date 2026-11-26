@@ -400,8 +400,8 @@ resource "aws_iam_role_policy" "read_secrets" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "secretsmanager:GetSecretValue"
+      Effect = "Allow"
+      Action = "secretsmanager:GetSecretValue"
       Resource = [
         aws_secretsmanager_secret.database_url.arn,
         aws_secretsmanager_secret.openai.arn,
@@ -600,6 +600,29 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_protocol                  = "sigv4"
 }
 
+# S3 does not serve index.html for a folder path, and CloudFront's
+# default root object applies only to "/". This function runs on
+# viewer requests for the frontend (not the API paths) and maps
+# "/", "/acquireiq" and any path ending in "/" to its index.html.
+# The query string, e.g. ?user=3, is left unchanged.
+resource "aws_cloudfront_function" "frontend_index" {
+  name    = "${var.app}-frontend-index"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+      if (uri === "/" || uri === "/acquireiq") {
+        request.uri = "/acquireiq/index.html";
+      } else if (uri.charAt(uri.length - 1) === "/") {
+        request.uri = uri + "index.html";
+      }
+      return request;
+    }
+  EOT
+}
+
 # AWS-managed CloudFront policies, looked up by name.
 data "aws_cloudfront_cache_policy" "optimized" {
   name = "Managed-CachingOptimized"
@@ -646,6 +669,11 @@ resource "aws_cloudfront_distribution" "main" {
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.frontend_index.arn
+    }
   }
 
   # Backend routes, matching backend/src/routes. Add a pattern

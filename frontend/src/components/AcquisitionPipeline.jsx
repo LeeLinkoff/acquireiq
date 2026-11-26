@@ -2,9 +2,8 @@
  * AcquisitionPipeline is the main data-driven view for AcquireIQ.
  *
  * It loads acquisition requests from the real backend API and owns the
- * loading and error states for the pipeline. Request filtering, request
- * detail, status updates, and AI-assisted search will be added as focused
- * child components as we build out the required frontend workflow.
+ * loading and error states for the pipeline, the status and priority
+ * filters, AI-assisted search, and the request detail modal.
  */
 
 import React, { useCallback, useEffect, useState } from 'react'
@@ -13,6 +12,20 @@ import Message from './Message.jsx'
 import RequestDetail from './RequestDetail.jsx'
 import Modal from './Modal.jsx'
 import '../styles/pipeline.css'
+
+// budgetCeiling arrives as a PostgreSQL NUMERIC string such as
+// "300000.00". Values that cannot be parsed are shown unchanged.
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 0,
+})
+
+function formatCurrency(value)
+{
+  const amount = Number(value)
+  return Number.isFinite(amount) ? currencyFormatter.format(amount) : value
+}
 
 
 export default function AcquisitionPipeline() 
@@ -47,10 +60,12 @@ export default function AcquisitionPipeline()
   // Stores metadata returned by the AI endpoint so the UI can visibly
   // distinguish confident results from low-confidence or fallback responses.
   const [aiResult, setAiResult] = useState(null)
+  const [aiError, setAiError] = useState(null)
 
   const loadRequests = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setAiResult(null)
 
     try {
       const result = await getRequests()
@@ -83,7 +98,7 @@ export default function AcquisitionPipeline()
     )
   }
   
-  const visibleRequests = Array.isArray(requests) ? requests.filter((request) => (selectedStatus === 'all' || request.status === selectedStatus) && (selectedPriority === 'all' || request.priority === selectedPriority)  ) : requests
+   const visibleRequests = Array.isArray(requests) ? requests.filter((request) => (selectedStatus === 'all' || request.status === selectedStatus) && (selectedPriority === 'all' || request.priority === selectedPriority)  ) : requests
 
   /*
    * Clears the AI-assisted search and restores the complete acquisition
@@ -93,6 +108,7 @@ export default function AcquisitionPipeline()
   {
     setAiQuery('')
 	setAiResult(null)
+	setAiError(null)
     setSelectedStatus('all')
     setSelectedPriority('all')
     await loadRequests()
@@ -116,20 +132,28 @@ export default function AcquisitionPipeline()
 	  }
 
 	  setAiSearching(true)
-	  setError(null)
+	  setAiError(null)
 
 	  try
 	  {
 		const result = await queryAcquisitions(query)
 
-		setRequests(result.results)
+		// A fallback response means the search was not applied, so the
+		// current list stays as it is instead of being replaced by an
+		// empty result set.
+		if (result.mode !== 'fallback')
+		{
+		  setRequests(result.results)
+		  setSelectedStatus('all')
+		  setSelectedPriority('all')
+		}
+
 		setAiResult(result)
-		setSelectedStatus('all')
-		setSelectedPriority('all')
 	  }
 	  catch (err)
 	  {
-		setError(err)
+		setAiResult(null)
+		setAiError(err)
 	  }
 	  finally
 	  {
@@ -203,7 +227,7 @@ export default function AcquisitionPipeline()
 
 				<span>
 				  {aiResult.mode === 'fallback'
-					? "I couldn't confidently interpret this request. Try rephrasing your search."
+					? "I couldn't confidently interpret this request, so the list below is unchanged. Try rephrasing your search."
 					: 'AcquireIQ confidently interpreted your search.'}
 				</span>
 
@@ -243,6 +267,7 @@ export default function AcquisitionPipeline()
 			  <option value="low">Low</option>
 			  <option value="medium">Medium</option>
 			  <option value="high">High</option>
+			  <option value="critical">Critical</option>
 			</select>
 		  </label>
 	  </div>
@@ -262,10 +287,20 @@ export default function AcquisitionPipeline()
         />
       )}
 
+	  {aiError && (
+        <Message type="error"
+				 title="AI Search Unavailable"
+				 message="AI-assisted search could not be completed. The list below is unchanged."
+				 onClose={() => setAiError(null)}
+        />
+      )}
+
       {!loading && !error && Array.isArray(visibleRequests) && visibleRequests.length === 0 && (
         <div className="placeholder-panel">
           <h3>No matching acquisition requests</h3>
-          <p>No requests match the selected status.</p>
+		  <p>
+    			{aiResult && aiResult.mode !== 'fallback' ? 'No requests match this AI-assisted search.' : 'No requests match the selected filters.'}
+		  </p>
         </div>
       )}
 
@@ -276,8 +311,8 @@ export default function AcquisitionPipeline()
 				<tr>
 				  <th>ID</th>
 				  <th>Title</th>
-				  <th>Department</th>
 				  <th>Priority</th>
+				  <th>Budget Ceiling</th>
 				  <th>Status</th>
 				  <th>Fiscal Year</th>
 				  <th>Actions</th>
@@ -293,13 +328,13 @@ export default function AcquisitionPipeline()
 					  <strong>{request.title}</strong>
 					</td>
 
-					<td>{request.department}</td>
-
 					<td>
 					  {request.priority
 						?.replaceAll('_', ' ')
 						.replace(/\b\w/g, (letter) => letter.toUpperCase())}
 					</td>
+
+					<td>{formatCurrency(request.budgetCeiling)}</td>
 
 					<td>
 					  {request.status

@@ -77,9 +77,11 @@ backend/
 │   ├── schemas.generated.ts
 │   ├── server.ts
 │   └── swagger-spec.ts
-├── .env
 ├── .env.example
+├── Dockerfile
+├── package-lock.json
 ├── package.json
+├── README.md
 └── tsconfig.json
 ```
 

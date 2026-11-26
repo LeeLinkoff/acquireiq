@@ -6,8 +6,7 @@
  * /requests/:id, including its description, approval chain, contract, and
  * protest information.
  *
- * Approval-stage presentation will be delegated to ApprovalStage so parallel
- * approvals can be displayed clearly without putting all detail logic here.
+ * Approval-stage presentation is delegated to ApprovalStage so parallel approvals can be displayed clearly without putting all detail logic here.
  */
 
 import React, { useEffect, useState } from 'react'

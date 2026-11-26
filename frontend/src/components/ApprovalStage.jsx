@@ -51,7 +51,7 @@ export default function ApprovalStage({ approvals, onApprovalDecision, updatingA
     <div className="approval-stage">
       <div className="approval-stage-heading">
         <strong>
-          Stage {stage.stageSequence} — {stage.stageName}
+          Stage {stage.stageSequence}: {stage.stageName}
         </strong>
 		<span className={`approval-stage-state approval-stage-state-${stageState}`}>
 			{stageState.toUpperCase()}

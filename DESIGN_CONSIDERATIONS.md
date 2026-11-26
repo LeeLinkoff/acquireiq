@@ -367,6 +367,8 @@ The API avoids exposing generic CRUD operations merely because additional operat
 
 For approvals, AcquireIQ provides `PATCH /requests/:requestId/approvals/:approvalId/decision` because recording approval decisions and advancing once every approver at the current stage has recorded a decision are explicitly required behaviors. The route accepts the user action through the API contract, while the backend invokes PostgreSQL's authoritative approval operation and interprets its result. PostgreSQL enforces pending/current-stage eligibility and derives approval-stage progression from the authoritative approval records. The implementation deliberately does not couple approval-stage progression to request-status progression because that relationship is not defined by the challenge.
 
+With more time, I would extend the approval-decision contract only after clarifying the remaining approval-lifecycle rules with domain stakeholders, particularly rejection semantics, authorization, approver assignment or reassignment, and any relationship between approval-stage progression and request-status progression.
+
 ---
 
 ## 9. User Identity
@@ -506,7 +508,7 @@ Optional stretch functionality was not a primary implementation goal.
 
 The challenge explicitly identifies its stretch items as optional, and I prioritized completing, exercising, validating, and documenting the required scope rather than expanding the implementation for breadth. Where additional work directly strengthened confidence in required behavior, I included it. For example, AcquireIQ includes an automated simultaneous-update concurrency test, part of the backend regression suite in `dev_scripts/test-all-workflows.bat`, in addition to the required concurrency verification explanation.
 
-I did not pursue the broader optional capabilities, such as protest resolution, as substitutes for completing the core application. The optional AWS deployment documented in `ARCHITECTURE_AND_DEPLOYMENT.md` is separate from the core implementation and is not required to run the application. The required exercise already spans data modeling, database setup and seed data, concurrency-safe request-status behavior, REST APIs, LLM integration and validation, frontend integration, testing, and design documentation.
+I did not pursue the broader optional capabilities, such as protest resolution, as substitutes for completing the core application. The optional VPS and AWS deployments documented in `ARCHITECTURE_AND_DEPLOYMENT.md` are separate from the core implementation and are not required to run the application. The required exercise already spans data modeling, database setup and seed data, concurrency-safe request-status behavior, REST APIs, LLM integration and validation, frontend integration, testing, and design documentation.
 
 This was also consistent with the most important issue discovered during implementation. Extending the approval workflow beyond the challenge-required behavior is less valuable than first resolving the remaining business-rule ambiguities with actual users and domain SMEs. Given additional time, that validation would take priority over implementing optional features simply to increase the amount of code delivered.
 

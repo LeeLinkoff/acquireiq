@@ -2,7 +2,7 @@ name: Deploy to AWS
 
 # ============================================================
 # PURPOSE: Deploy AcquireIQ to AWS with Terraform. Separate from
-# deploy-to-vps.yml, which deploys to the Linode VPS.
+# deploy-to-vps.yml, which deploys to the VPS.
 #
 # TRIGGER: manual only (Actions tab -> Deploy to AWS -> Run
 # workflow), so it never runs alongside deploy-to-vps.yml on a

@@ -9,19 +9,30 @@
  * or any other feature that needs to display content in a popup.
  */
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
 import '../styles/modal.css'
 
 
 function Modal({ children, onClose, ariaLabel = 'Dialog', size = 'default' })
 {
+  const overlayRef = useRef(null)
+
   // Register Escape only while the modal exists. The cleanup removes the
   // document-level listener when the modal is closed or unmounted.
   useEffect(() =>
   {
     function handleKeyDown(event)
     {
-      if (event.key === 'Escape' && onClose)
+      if (event.key !== 'Escape' || !onClose)
+      {
+        return
+      }
+
+      // When modals are stacked, such as an error message over the request
+      // detail, only the topmost one closes. The topmost overlay is the last
+      // one in document order.
+      const overlays = document.querySelectorAll('.modal-overlay')
+      if (overlays[overlays.length - 1] === overlayRef.current)
       {
         onClose()
       }
@@ -52,6 +63,7 @@ function Modal({ children, onClose, ariaLabel = 'Dialog', size = 'default' })
 
   return (
     <div
+      ref={overlayRef}
       className="modal-overlay"
       role="presentation"
       onClick={handleOverlayClick}

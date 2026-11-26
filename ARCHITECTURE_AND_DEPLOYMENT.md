@@ -108,7 +108,7 @@ The backend is Node.js, Express, and TypeScript with `strict: true`.
 
 TypeScript is the source language. Compiled JavaScript under `dist/` is the runtime artifact used by the production Docker container.
 
-The backend follows the existing thin-router/service pattern:
+The backend follows a thin-router/service pattern:
 
 ```text
 HTTP route
@@ -229,11 +229,9 @@ The API exposes an explicit low-confidence or fallback condition when the interp
 
 The frontend uses React and Vite.
 
-The reusable frontend scaffold deliberately uses JavaScript rather than TypeScript. Because the frontend is intentionally a relatively thin presentation and interaction layer, with consequential business rules and workflow validation remaining backend-owned, the additional compile-time type layer and build/debugging indirection of TypeScript were not considered justified for this UI. Using JavaScript keeps the browser-facing implementation closer to the language ultimately executed by the browser and reduces unnecessary complexity during development and debugging. If the frontend evolved to contain substantially richer client-side domain logic, state, or shared contracts, the tradeoff would change and TypeScript would become a stronger choice.
+The frontend deliberately uses JavaScript rather than TypeScript. Because the frontend is intentionally a relatively thin presentation and interaction layer, with consequential business rules and workflow validation remaining backend-owned, the additional compile-time type layer and build/debugging indirection of TypeScript were not considered justified for this UI. Using JavaScript keeps the browser-facing implementation closer to the language ultimately executed by the browser and reduces unnecessary complexity during development and debugging. If the frontend evolved to contain substantially richer client-side domain logic, state, or shared contracts, the tradeoff would change and TypeScript would become a stronger choice.
 
-The existing scaffold provides a centralized API client, reusable component structure, logging, loading/error handling patterns, and a working backend health check.
-
-AcquireIQ builds the acquisition-specific interface on that foundation.
+The frontend provides a centralized API client, reusable component structure, configurable logging, loading/error handling patterns, and a backend health check.
 
 Primary user-facing areas include:
 
@@ -264,39 +262,6 @@ AcquireIQ generates OpenAPI component schemas from exported TypeScript interface
 
 This reduces response-schema drift without requiring a larger framework change solely to generate every part of the OpenAPI document.
 
-## 1.9 Why reuse the existing scaffold
-
-AcquireIQ deliberately starts from a previously proven application scaffold rather than rebuilding generic infrastructure from scratch.
-
-Reusable pieces include:
-
-- React / Vite baseline
-- Node / Express / TypeScript baseline
-- strict TypeScript configuration
-- health endpoint
-- Swagger / OpenAPI support
-- centralized logging
-- Docker backend build
-- CI workflow structure
-- VPS deployment workflow structure
-- Apache reverse-proxy pattern
-- frontend static-build deployment
-
-AcquireIQ-specific behavior is new:
-
-- PostgreSQL acquisition model
-- acquisition request APIs
-- parallel approval modeling, PostgreSQL-enforced decision recording and stage-state derivation, and backend API orchestration
-- concurrency-safe status transitions
-- dashboard aggregation
-- AI structured-filter contract
-- LLM-provider integration
-- AI validation/fallback behavior
-- AcquireIQ React interface
-- AcquireIQ tests
-
-Reusing infrastructure is an engineering decision, not an attempt to treat old application logic as part of this solution. The goal is to spend assessment time on the domain, concurrency, API, AI-reliability, and UI decisions that actually distinguish AcquireIQ.
-
 ---
 
 # PART 2: PUBLIC DEPLOYMENT
@@ -307,7 +272,7 @@ Reusing infrastructure is an engineering decision, not an attempt to treat old a
 
 The challenge does not require production deployment or a publicly accessible instance.
 
-AcquireIQ nevertheless includes a deployment path. This is a deliberate decision to go beyond the challenge requirements: AcquireIQ is intended to remain available after the assessment as another public showcase of the engineering work, rather than existing only as a repository created for an interview exercise.
+AcquireIQ nevertheless includes a deployment path. This is a deliberate decision to go beyond the challenge requirements: AcquireIQ is intended to remain available after the assessment as a public showcase of the engineering work, rather than existing only as a repository created for an interview exercise.
 
 A live deployment therefore serves two purposes:
 
@@ -352,6 +317,7 @@ CloudFront
 Key points:
 
 - **One public address.** CloudFront serves the frontend and forwards the API paths to the load balancer, so the browser calls the API on the same origin and no CORS or mixed-content handling is needed.
+- **Frontend path.** S3 does not serve `index.html` for a folder path, so a small CloudFront function maps `/`, `/acquireiq` and `/acquireiq/` to `/acquireiq/index.html`. It runs only on frontend requests, not the API paths, and leaves the query string unchanged.
 - **Network.** A dedicated VPC (`10.20.0.0/16`) across two Availability Zones. Public subnets hold the load balancer and, by default, the API task. Private subnets hold the database. An optional NAT gateway (`use_nat_gateway = true`) moves the API task into the private subnets.
 - **Security groups.** The load balancer accepts traffic only from CloudFront, the API task only from the load balancer, and the database only from the API and db-init tasks.
 - **Secrets.** `DATABASE_URL`, `OPENAI_API_KEY` and the database passwords are stored in AWS Secrets Manager and injected into the containers at start. None are stored in the image, the task definition, or a `VITE_*` variable.

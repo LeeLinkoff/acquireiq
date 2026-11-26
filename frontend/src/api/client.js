@@ -16,16 +16,24 @@ export function getHealth() {
  *
  * All API calls pass through this function so response parsing, error handling,
  * headers, and retry behavior remain consistent across the application.
- */
+ *
+ * Only GET requests that fail at the network level are retried. An HTTP error
+ * response, such as 400 or 422, is the server's answer and is returned to the
+ * caller immediately. Writes (POST, PATCH) are never retried, because a write
+ * that reached the server before the connection failed could be applied twice.
+*/
 export async function request(path, options = {}, retries = 2, delayMs = 750)
 {
+  const method = (options.method ?? 'GET').toUpperCase()
+  const maxRetries = method === 'GET' ? retries : 0
+
   // API_BASE can be configured for deployment. During local development it is
   // normally empty because Vite proxies the relative API paths to the backend.
   const url = `${API_BASE}${path}`
   let lastError
 
   // Make the initial request plus the configured number of retry attempts.
-  for (let attempt = 0; attempt <= retries; attempt += 1)
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1)
   {
     try
 	{
@@ -61,6 +69,7 @@ export async function request(path, options = {}, retries = 2, delayMs = 750)
         const error = new Error(`API request failed with status ${response.status}`)
         error.status = response.status
         error.details = data
+		error.isHttpError = true
         throw error
       }
 
@@ -68,12 +77,15 @@ export async function request(path, options = {}, retries = 2, delayMs = 750)
     }
 	catch (error)
 	{
+      // An HTTP error response is final; return it without retrying.
+      if (error.isHttpError) throw error
+
 	 // Retain the most recent failure so it can be surfaced if all attempts fail.
       lastError = error
 	  
       // Wait briefly before another attempt instead of immediately hammering the
       // backend when it may be temporarily unavailable.
-      if (attempt < retries) await sleep(delayMs)
+      if (attempt < maxRetries) await sleep(delayMs)
     }
   }
 
