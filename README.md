@@ -689,7 +689,7 @@ Testing focuses on the behavior with the greatest correctness risk.
 
 The backend regression suite is [`dev_scripts/test-all-workflows.bat`](dev_scripts/test-all-workflows.bat). It runs on Windows with CMD and `curl` against the running backend at `http://localhost:3002`, creates its own fresh test data, and cleans it up afterward. It needs the database set up and seeded as described above, PostgreSQL's `psql.exe` installed under `C:\Program Files\PostgreSQL`, and a valid `OPENAI_API_KEY` in `backend/.env` for the AI-assisted search checks.
 
-From the repository root, with the backend running:
+From the repository root. If the backend is not already running, the suite starts it in its own window and waits for it:
 
 ```bat
 dev_scripts\test-all-workflows.bat

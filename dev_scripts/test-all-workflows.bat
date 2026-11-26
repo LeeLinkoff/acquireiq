@@ -32,6 +32,55 @@ if not defined PSQL (
     exit /b 1
 )
 
+rem ------------------------------------------------------------
+rem Make sure the backend is running
+rem
+rem The suite calls the backend API, not PostgreSQL directly. If the
+rem backend is not answering at %BASE%, start it in its own window
+rem with npm run dev and wait for /api/health to answer. That window
+rem stays open after the tests; close it when finished.
+rem ------------------------------------------------------------
+
+call :BACKEND_UP
+if "!BACKEND_OK!"=="1" goto BACKEND_READY
+
+set "BACKEND_DIR=%~dp0..\backend"
+
+if not exist "%BACKEND_DIR%\.env" (
+    echo ERROR: backend\.env was not found. Create it first:
+    echo   copy backend\.env.example backend\.env
+    exit /b 1
+)
+
+if not exist "%BACKEND_DIR%\node_modules" (
+    echo ERROR: backend dependencies are not installed. Run once:
+    echo   cd backend
+    echo   npm install
+    exit /b 1
+)
+
+echo Backend is not running at %BASE%. Starting it in a new window...
+start "AcquireIQ Backend" /D "%BACKEND_DIR%" cmd /k npm run dev
+
+set /a WAITED=0
+
+:WAIT_BACKEND
+rem ping waits about 2 seconds and, unlike timeout, works without a console.
+ping -n 3 127.0.0.1 >nul
+set /a WAITED+=2
+call :BACKEND_UP
+if "!BACKEND_OK!"=="1" goto BACKEND_READY
+if !WAITED! GEQ 90 (
+    echo ERROR: Backend did not answer at %BASE%/api/health within 90 seconds.
+    echo Check the "AcquireIQ Backend" window for the error.
+    exit /b 1
+)
+goto WAIT_BACKEND
+
+:BACKEND_READY
+echo Backend is running at %BASE%.
+echo.
+
 call :CLEANUP
 
 echo ============================================================
@@ -1422,6 +1471,16 @@ if !FAIL! EQU 0 (
 rem ============================================================
 rem SUBROUTINES
 rem ============================================================
+
+:BACKEND_UP
+
+rem Sets BACKEND_OK=1 when %BASE%/api/health answers HTTP 200.
+set "BACKEND_OK=0"
+for /f %%H in ('curl.exe -s -o nul -w "%%{http_code}" "%BASE%/api/health"') do (
+    if "%%H"=="200" set "BACKEND_OK=1"
+)
+
+exit /b
 
 :CHECK
 
